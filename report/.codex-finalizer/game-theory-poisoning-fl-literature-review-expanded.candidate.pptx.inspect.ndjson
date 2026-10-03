@@ -1,0 +1,606 @@
+{"kind":"deck","id":"pr/aal6hm","name":"Deck"}
+{"kind":"layout","layoutId":"5ebcae3a-dfcc-47f0-825b-b19d55f6e232","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"214c496d-a3f5-4a35-a808-73804cea528a","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/om2huz","slide":1,"title":"Game Theory for Modeling","textShapes":3}
+{"kind":"shape","id":"sh/lobitg3q","slide":1,"bbox":[76,132,8,408]}
+{"kind":"textbox","id":"sh/y10zy14f","slide":1,"text":"Game Theory for Modeling\nPoisoning Attacks in Federated Learning","textPreview":"Game Theory for Modeling | Poisoning Attacks in Federated Learning","textChars":64,"textLines":2,"bbox":[122,156,990,170]}
+{"kind":"textbox","id":"sh/z2t0r6l0","slide":1,"text":"Concepts, game families, evaluation metrics, and detailed paper studies","textPreview":"Concepts, game families, evaluation metrics, and detailed paper studies","textChars":71,"textLines":1,"bbox":[126,360,880,42]}
+{"kind":"textbox","id":"sh/8r214bmh","slide":1,"text":"Literature review presentation","textPreview":"Literature review presentation","textChars":30,"textLines":1,"bbox":[126,456,420,28]}
+{"kind":"notes","id":"nt/om2huz","slide":1,"text":"Scope: literature review of game theory for poisoning attacks in federated learning. This deck introduces concepts before analyzing five representative papers."}
+{"kind":"slide","id":"sl/fqi8vs","slide":2,"title":"Strategic motivation","textShapes":9}
+{"kind":"textbox","id":"sh/fm50fqd4","slide":2,"text":"Strategic motivation","textPreview":"Strategic motivation","textChars":20,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/gny1ovep","slide":2,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/1o7ih0vu","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/6xwzi1w7","slide":2,"text":"Poisoning can involve deliberate adaptation: an attacker chooses how to harm learning while a defender chooses how to respond.","textPreview":"Poisoning can involve deliberate adaptation: an attacker chooses how to harm learning while a defender chooses how to respond.","textChars":126,"textLines":1,"bbox":[74,150,1115,64]}
+{"kind":"shape","id":"sh/ry50b6ds","slide":2,"bbox":[98,290,10,10]}
+{"kind":"textbox","id":"sh/sze1kbed","slide":2,"text":"Attacker choice","textPreview":"Attacker choice","textChars":15,"textLines":1,"bbox":[126,282,462,28]}
+{"kind":"textbox","id":"sh/tknidgvy","slide":2,"text":"Target, poisoning ratio, trigger, timing, or how closely a malicious update resembles a benign one.","textPreview":"Target, poisoning ratio, trigger, timing, or how closely a malicious update resembles a benign one.","textChars":99,"textLines":1,"bbox":[126,316,462,58]}
+{"kind":"shape","id":"sh/atgju5wr","slide":2,"bbox":[650,290,10,10]}
+{"kind":"textbox","id":"sh/bup0nadc","slide":2,"text":"Defender choice","textPreview":"Defender choice","textChars":15,"textLines":1,"bbox":[678,282,462,28]}
+{"kind":"textbox","id":"sh/veh8vi9g","slide":2,"text":"Admission, weighting, filtering, robust aggregation, post-training repair, or local isolation.","textPreview":"Admission, weighting, filtering, robust aggregation, post-training repair, or local isolation.","textChars":94,"textLines":1,"bbox":[678,316,462,58]}
+{"kind":"shape","id":"sh/ud8r2d8v","slide":2,"bbox":[98,458,10,10]}
+{"kind":"textbox","id":"sh/hgzqx8rm","slide":2,"text":"Strategic interaction","textPreview":"Strategic interaction","textChars":21,"textLines":1,"bbox":[126,450,1012,28]}
+{"kind":"textbox","id":"sh/gfq94nq1","slide":2,"text":"Each side anticipates how the other side may react. The payoff therefore depends on both decisions.","textPreview":"Each side anticipates how the other side may react. The payoff therefore depends on both decisions.","textChars":99,"textLines":1,"bbox":[126,484,1012,58]}
+{"kind":"notes","id":"nt/fqi8vs","slide":2,"text":"Motivation synthesized from Sagduyu, Erpek, and Shi (2023), arXiv:2312.17164; Jia et al. (2023), FedGame, NeurIPS 2023; Li et al. (2024), arXiv:2410.17431."}
+{"kind":"slide","id":"sl/u5lnqp","slide":3,"title":"Presentation roadmap","textShapes":8}
+{"kind":"textbox","id":"sh/xkrqdgnm","slide":3,"text":"Presentation roadmap","textPreview":"Presentation roadmap","textChars":20,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/ah0r21ov","slide":3,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/bi98b65g","slide":3,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/ofi90r6p","slide":3,"bbox":[100,184,10,10]}
+{"kind":"textbox","id":"sh/9grq9wna","slide":3,"text":"I. Foundations","textPreview":"I. Foundations","textChars":14,"textLines":1,"bbox":[128,176,1012,28]}
+{"kind":"textbox","id":"sh/mdg7y1oz","slide":3,"text":"Game-theory vocabulary, representations, equilibria, game families, and evaluation metrics.","textPreview":"Game-theory vocabulary, representations, equilibria, game families, and evaluation metrics.","textChars":91,"textLines":1,"bbox":[128,210,1012,58]}
+{"kind":"shape","id":"sh/nep8765k","slide":3,"bbox":[100,338,10,10]}
+{"kind":"textbox","id":"sh/sb29cv69","slide":3,"text":"II. Detailed case studies","textPreview":"II. Detailed case studies","textChars":25,"textLines":1,"bbox":[128,330,1012,28]}
+{"kind":"textbox","id":"sh/tcbq50nu","slide":3,"text":"Five papers with their research question, strategic model, solution method, experimental evidence, and boundaries.","textPreview":"Five papers with their research question, strategic model, solution method, experimental evidence, and boundaries.","textChars":114,"textLines":1,"bbox":[128,364,1012,58]}
+{"kind":"shape","id":"sh/5gvado32","slide":3,"bbox":[100,492,10,10]}
+{"kind":"textbox","id":"sh/4fmtkjmh","slide":3,"text":"III. Comparison","textPreview":"III. Comparison","textChars":15,"textLines":1,"bbox":[128,484,1012,28]}
+{"kind":"textbox","id":"sh/3edsbylc","slide":3,"text":"Which choices make the papers different, and which modeling ingredients matter for later research design.","textPreview":"Which choices make the papers different, and which modeling ingredients matter for later research design.","textChars":105,"textLines":1,"bbox":[128,518,1012,58]}
+{"kind":"notes","id":"nt/u5lnqp","slide":3,"text":"Roadmap for the literature review."}
+{"kind":"slide","id":"sl/2ex0gg","slide":4,"title":"What game theory contributes","textShapes":9}
+{"kind":"textbox","id":"sh/7y5gzq5g","slide":4,"text":"What game theory contributes","textPreview":"What game theory contributes","textChars":28,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/8jeh8vml","slide":4,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/9kny10n6","slide":4,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/ulgza54r","slide":4,"text":"Game theory studies decision-making when the outcome for one actor depends on actions chosen by other actors.","textPreview":"Game theory studies decision-making when the outcome for one actor depends on actions chosen by other actors.","textChars":109,"textLines":1,"bbox":[74,148,1100,56]}
+{"kind":"textbox","id":"sh/vmpg3a5c","slide":4,"text":"DESCRIPTIVE USE","textPreview":"DESCRIPTIVE USE","textChars":15,"textLines":1,"bbox":[98,270,430,20]}
+{"kind":"textbox","id":"sh/wnyhcvmx","slide":4,"text":"Explain what rational actors may do under stated incentives and information.","textPreview":"Explain what rational actors may do under stated incentives and information.","textChars":76,"textLines":1,"bbox":[98,297,430,58]}
+{"kind":"textbox","id":"sh/ho7i50ni","slide":4,"text":"ANALYTICAL USE","textPreview":"ANALYTICAL USE","textChars":14,"textLines":1,"bbox":[690,270,430,20]}
+{"kind":"textbox","id":"sh/ipgze543","slide":4,"text":"Derive equilibrium, best response, or a bound that connects choices with outcomes.","textPreview":"Derive equilibrium, best response, or a bound that connects choices with outcomes.","textChars":82,"textLines":1,"bbox":[690,297,430,58]}
+{"kind":"textbox","id":"sh/jqp07a58","slide":4,"text":"DESIGN USE","textPreview":"DESIGN USE","textChars":10,"textLines":1,"bbox":[98,440,1020,20]}
+{"kind":"textbox","id":"sh/jihsrelo","slide":4,"text":"Construct a defense policy that accounts for an adaptive attacker instead of a fixed attack.","textPreview":"Construct a defense policy that accounts for an adaptive attacker instead of a fixed attack.","textChars":92,"textLines":1,"bbox":[98,467,1020,58]}
+{"kind":"notes","id":"nt/2ex0gg","slide":4,"text":"General game-theory framing. Application-specific examples follow the reviewed FL papers."}
+{"kind":"slide","id":"sl/63ig43","slide":5,"title":"Modeling vocabulary","textShapes":2}
+{"kind":"textbox","id":"sh/o3y907ml","slide":5,"text":"Modeling vocabulary","textPreview":"Modeling vocabulary","textChars":19,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/3ipsr250","slide":5,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/2hgryx4f","slide":5,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"table","id":"tb/s3q5w3qt","slide":5,"name":"","rows":7,"cols":3,"preview":"Concept | Meaning | Poisoning example","bbox":[64,144,1152,478]}
+{"kind":"notes","id":"nt/63ig43","slide":5,"text":"Conceptual glossary used throughout the deck. Paper-specific instantiations are cited in the later case studies."}
+{"kind":"slide","id":"sl/2pv6qu","slide":6,"title":"Players, actions, and strategies","textShapes":10}
+{"kind":"textbox","id":"sh/2t4vyxg7","slide":6,"text":"Players, actions, and strategies","textPreview":"Players, actions, and strategies","textChars":32,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/pwvutsfy","slide":6,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/ovmd0nyd","slide":6,"text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/byxwv2x4","slide":6,"text":"A game model starts with a precise question: who can choose what, at which time, based on which observations?","textPreview":"A game model starts with a precise question: who can choose what, at which time, based on which observations?","textChars":109,"textLines":1,"bbox":[74,145,1120,44]}
+{"kind":"textbox","id":"sh/axov2xwj","slide":6,"text":"PLAYERS","textPreview":"PLAYERS","textChars":7,"textLines":1,"bbox":[94,244,330,20]}
+{"kind":"textbox","id":"sh/x0fexcfu","slide":6,"text":"Defender and attacker in adversarial FL; local model and aggregate model in pFedGame.","textPreview":"Defender and attacker in adversarial FL; local model and aggregate model in pFedGame.","textChars":85,"textLines":1,"bbox":[94,271,330,58]}
+{"kind":"textbox","id":"sh/cz6d47ep","slide":6,"text":"ACTION SETS","textPreview":"ACTION SETS","textChars":11,"textLines":1,"bbox":[475,244,330,20]}
+{"kind":"textbox","id":"sh/r2tcjixk","slide":6,"text":"The feasible decision variables, such as a poisoning ratio r or an aggregation rule Aggr.","textPreview":"The feasible decision variables, such as a poisoning ratio r or an aggregation rule Aggr.","textChars":89,"textLines":1,"bbox":[475,271,330,58]}
+{"kind":"textbox","id":"sh/61kvqdgf","slide":6,"text":"STRATEGY","textPreview":"STRATEGY","textChars":8,"textLines":1,"bbox":[856,244,330,20]}
+{"kind":"textbox","id":"sh/kbad0jyh","slide":6,"text":"A complete contingent rule. In a repeated setting, it maps observed history or state to an action.","textPreview":"A complete contingent rule. In a repeated setting, it maps observed history or state to an action.","textChars":98,"textLines":1,"bbox":[856,271,330,58]}
+{"kind":"textbox","id":"sh/5c3e9of2","slide":6,"text":"A paper can call an algorithm “game-theoretic” only after these decision variables and their connection to outcomes are made explicit.","textPreview":"A paper can call an algorithm “game-theoretic” only after these decision variables and their connection to outcomes are made explicit.","textChars":134,"textLines":1,"bbox":[128,500,1000,48]}
+{"kind":"notes","id":"nt/2pv6qu","slide":6,"text":"Applied examples: Sagduyu et al. use attacker poisoning probabilities and server admission probabilities. FedGame uses attacker poisoning ratio and trigger; Meta Stackelberg uses defense and attack policies."}
+{"kind":"slide","id":"sl/sxltgu","slide":7,"title":"Utility functions and trade-offs","textShapes":8}
+{"kind":"textbox","id":"sh/fu18vuhk","slide":7,"text":"Utility functions and trade-offs","textPreview":"Utility functions and trade-offs","textChars":32,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/gva9ozi5","slide":7,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/1wjqx4zq","slide":7,"text":"07","textPreview":"07","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/6p8rip0n","slide":7,"text":"The utility function turns a qualitative objective into a quantity that a player seeks to maximize or minimize.","textPreview":"The utility function turns a qualitative objective into a quantity that a player seeks to maximize or minimize.","textChars":111,"textLines":1,"bbox":[74,148,1110,48]}
+{"kind":"shape","id":"sh/rqh8ra18","slide":7,"bbox":[98,270,10,10]}
+{"kind":"textbox","id":"sh/srq9kfit","slide":7,"text":"Defender utility","textPreview":"Defender utility","textChars":16,"textLines":1,"bbox":[126,262,472,28]}
+{"kind":"textbox","id":"sh/tszqtkze","slide":7,"text":"Usually rewards clean-task performance and penalizes poisoning impact, false positives, communication, or computation.","textPreview":"Usually rewards clean-task performance and penalizes poisoning impact, false positives, communication, or computation.","textChars":118,"textLines":1,"bbox":[126,296,472,72]}
+{"kind":"shape","id":"sh/i1ore50r","slide":7,"bbox":[650,270,10,10]}
+{"kind":"textbox","id":"sh/j2h8na1c","slide":7,"text":"Attacker utility","textPreview":"Attacker utility","textChars":16,"textLines":1,"bbox":[678,262,472,28]}
+{"kind":"textbox","id":"sh/f69cnu90","slide":7,"text":"Usually rewards damage or backdoor success and can penalize attack effort, detection, or isolation.","textPreview":"Usually rewards damage or backdoor success and can penalize attack effort, detection, or isolation.","textChars":99,"textLines":1,"bbox":[678,296,472,72]}
+{"kind":"textbox","id":"sh/e50bepsv","slide":7,"text":"Example trade-off: increasing a backdoor poisoning ratio can increase attack strength while making the local model easier to identify.","textPreview":"Example trade-off: increasing a backdoor poisoning ratio can increase attack strength while making the local model easier to identify.","textChars":134,"textLines":1,"bbox":[110,480,1040,55]}
+{"kind":"notes","id":"nt/sxltgu","slide":7,"text":"FedGame explicitly represents this trade-off in its attacker objective with a genuine score term and a poisoning-ratio term. Jia et al. (2023), Eq. 4."}
+{"kind":"slide","id":"sl/1qziqo","slide":8,"title":"Information, beliefs, and hidden types","textShapes":8}
+{"kind":"textbox","id":"sh/zydozuh8","slide":8,"text":"Information, beliefs, and hidden types","textPreview":"Information, beliefs, and hidden types","textChars":38,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/kzmp8zyt","slide":8,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/l0v614zy","slide":8,"text":"08","textPreview":"08","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/m1o7a9gj","slide":8,"bbox":[100,190,10,10]}
+{"kind":"textbox","id":"sh/72xo3eh4","slide":8,"text":"Complete information","textPreview":"Complete information","textChars":20,"textLines":1,"bbox":[128,182,452,28]}
+{"kind":"textbox","id":"sh/836pczyp","slide":8,"text":"Both sides know the payoff-relevant model and action sets. This assumption simplifies analysis but rarely holds fully in FL.","textPreview":"Both sides know the payoff-relevant model and action sets. This assumption simplifies analysis but rarely holds fully in FL.","textChars":124,"textLines":1,"bbox":[128,216,452,78]}
+{"kind":"shape","id":"sh/94f654za","slide":8,"bbox":[650,190,10,10]}
+{"kind":"textbox","id":"sh/u5o7e9gv","slide":8,"text":"Incomplete information","textPreview":"Incomplete information","textChars":22,"textLines":1,"bbox":[678,182,452,28]}
+{"kind":"textbox","id":"sh/v6xo7ehg","slide":8,"text":"A defender may not know client identity, attacker objective, poison ratio, trigger, or attack family.","textPreview":"A defender may not know client identity, attacker objective, poison ratio, trigger, or attack family.","textChars":101,"textLines":1,"bbox":[678,216,452,78]}
+{"kind":"shape","id":"sh/be18vmho","slide":8,"bbox":[100,410,10,10]}
+{"kind":"textbox","id":"sh/atsr2103","slide":8,"text":"Belief over types","textPreview":"Belief over types","textChars":17,"textLines":1,"bbox":[128,402,1012,28]}
+{"kind":"textbox","id":"sh/xgjqxwzu","slide":8,"text":"A Bayesian model represents uncertainty with a distribution over possible attacker types. New observations can guide adaptation.","textPreview":"A Bayesian model represents uncertainty with a distribution over possible attacker types. New observations can guide adaptation.","textChars":128,"textLines":1,"bbox":[128,436,1012,74]}
+{"kind":"notes","id":"nt/1qziqo","slide":8,"text":"Li et al. (2024) define attack type using objective, method, and configuration, then model a domain of types with a prior distribution Q. arXiv:2410.17431, Sec. II."}
+{"kind":"slide","id":"sl/w8e3eo","slide":9,"title":"Timing and state transitions","textShapes":9}
+{"kind":"textbox","id":"sh/bqxgnm1w","slide":9,"text":"Timing and state transitions","textPreview":"Timing and state transitions","textChars":28,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/wb6hg72h","slide":9,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/xcfypcj2","slide":9,"text":"09","textPreview":"09","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/ml4faxkf","slide":9,"text":"One-shot and multi-round games answer different questions.","textPreview":"One-shot and multi-round games answer different questions.","textChars":58,"textLines":1,"bbox":[74,148,1110,40]}
+{"kind":"shape","id":"sh/nmdgj210","slide":9,"bbox":[100,254,10,10]}
+{"kind":"textbox","id":"sh/onmxc72l","slide":9,"text":"Simultaneous move","textPreview":"Simultaneous move","textChars":17,"textLines":1,"bbox":[128,246,472,28]}
+{"kind":"textbox","id":"sh/9ovylcj6","slide":9,"text":"Players choose without first observing the other current action. Nash equilibrium is a common solution concept.","textPreview":"Players choose without first observing the other current action. Nash equilibrium is a common solution concept.","textChars":111,"textLines":1,"bbox":[128,280,472,70]}
+{"kind":"shape","id":"sh/ehkf6xkj","slide":9,"bbox":[650,254,10,10]}
+{"kind":"textbox","id":"sh/zidgf2lo","slide":9,"text":"Sequential move","textPreview":"Sequential move","textChars":15,"textLines":1,"bbox":[678,246,472,28]}
+{"kind":"textbox","id":"sh/7y5wfudg","slide":9,"text":"A leader selects a policy and a follower best-responds. Stackelberg modeling requires a justified order of moves.","textPreview":"A leader selects a policy and a follower best-responds. Stackelberg modeling requires a justified order of moves.","textChars":113,"textLines":1,"bbox":[678,280,472,70]}
+{"kind":"shape","id":"sh/mxcvmpwv","slide":9,"bbox":[100,470,10,10]}
+{"kind":"textbox","id":"sh/90neh4vm","slide":9,"text":"Markov transition","textPreview":"Markov transition","textChars":17,"textLines":1,"bbox":[128,462,1012,28]}
+{"kind":"textbox","id":"sh/8zedoze1","slide":9,"text":"The joint actions update a state, such as global parameters. Future payoffs then depend on the updated state.","textPreview":"The joint actions update a state, such as global parameters. Future payoffs then depend on the updated state.","textChars":109,"textLines":1,"bbox":[128,496,1012,58]}
+{"kind":"notes","id":"nt/w8e3eo","slide":9,"text":"Sagduyu et al. analyze Nash equilibrium. Li et al. define a Bayesian Stackelberg Markov game with one state transition per FL round."}
+{"kind":"slide","id":"sl/9coyxi","slide":10,"title":"Game representations","textShapes":2}
+{"kind":"textbox","id":"sh/radgbado","slide":10,"text":"Game representations","textPreview":"Game representations","textChars":20,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/cbmh4fe9","slide":10,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/dcvyd0vu","slide":10,"text":"10","textPreview":"10","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"table","id":"tb/ryd4b2t0","slide":10,"name":"","rows":6,"cols":3,"preview":"Representation | Core ingredients | Use in this review","bbox":[64,144,1152,478]}
+{"kind":"notes","id":"nt/9coyxi","slide":10,"text":"General representations connected to reviewed papers. The Shapley row is used only as a contribution-valuation lens, not an attacker-defender equilibrium."}
+{"kind":"slide","id":"sl/f186ot","slide":11,"title":"Equilibrium and solution concepts","textShapes":2}
+{"kind":"textbox","id":"sh/e1crqlon","slide":11,"text":"Equilibrium and solution concepts","textPreview":"Equilibrium and solution concepts","textChars":33,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/143qlg7e","slide":11,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/g3u9sb6t","slide":11,"text":"11","textPreview":"11","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"table","id":"tb/ehsved0f","slide":11,"name":"","rows":6,"cols":3,"preview":"Concept | Question answered | Interpretation","bbox":[64,144,1152,478]}
+{"kind":"notes","id":"nt/f186ot","slide":11,"text":"Terminology tied to Sagduyu et al. (Nash), Jia et al. (minimax), and Li et al. (Bayesian and meta-Stackelberg)."}
+{"kind":"slide","id":"sl/0nkd94","slide":12,"title":"Evaluation metrics used in poisoning studies","textShapes":2}
+{"kind":"textbox","id":"sh/idsnutwj","slide":12,"text":"Evaluation metrics used in poisoning studies","textPreview":"Evaluation metrics used in poisoning studies","textChars":44,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/5g36pofa","slide":12,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/4fapwjep","slide":12,"text":"12","textPreview":"12","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"table","id":"tb/atojq503","slide":12,"name":"","rows":7,"cols":3,"preview":"Metric | Definition | Why it matters","bbox":[64,144,1152,478]}
+{"kind":"notes","id":"nt/0nkd94","slide":12,"text":"FedGame defines TA and ASR explicitly and reports genuine-score computation cost. Meta Stackelberg reports clean global accuracy and backdoor accuracy. Sagduyu et al. use classification accuracy and utilities."}
+{"kind":"slide","id":"sl/jz792h","slide":13,"title":"Literature map","textShapes":2}
+{"kind":"textbox","id":"sh/kvuhgjm5","slide":13,"text":"Literature map","textPreview":"Literature map","textChars":14,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/zul07e5k","slide":13,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/ytcze94z","slide":13,"text":"13","textPreview":"13","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"table","id":"tb/kzu1o72t","slide":13,"name":"","rows":6,"cols":3,"preview":"Paper | Game-theory mechanism | Primary question","bbox":[64,144,1152,478]}
+{"kind":"notes","id":"nt/jz792h","slide":13,"text":"Sources: Sagduyu et al. (2023), Jia et al. (2023), Li et al. (2024), Behera and Chakraborty (2024), Dong et al. (2026)."}
+{"kind":"slide","id":"sl/owtk2o","slide":14,"title":"Case study 1: Sagduyu, Erpek, and Shi (2023)","textShapes":4}
+{"kind":"textbox","id":"sh/md0v6x4r","slide":14,"text":"Case study 1: Sagduyu, Erpek, and Shi (2023)","textPreview":"Case study 1: Sagduyu, Erpek, and Shi (2023)","textChars":44,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/9gbuhs32","slide":14,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/8f2d87mx","slide":14,"text":"14","textPreview":"14","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/v2tcj2l8","slide":14,"bbox":[74,175,9,330]}
+{"kind":"textbox","id":"sh/ahkvax4n","slide":14,"text":"Securing NextG Systems against Poisoning Attacks on Federated Learning","textPreview":"Securing NextG Systems against Poisoning Attacks on Federated Learning","textChars":70,"textLines":1,"bbox":[116,210,900,160]}
+{"kind":"textbox","id":"sh/x4belc3e","slide":14,"text":"Paper-by-paper explanation: problem, model, solution, evidence, and interpretation","textPreview":"Paper-by-paper explanation: problem, model, solution, evidence, and interpretation","textChars":82,"textLines":1,"bbox":[118,434,850,34]}
+{"kind":"notes","id":"nt/owtk2o","slide":14,"text":""}
+{"kind":"slide","id":"sl/v2pcrk","slide":15,"title":"Sagduyu et al.: research question and setting","textShapes":8}
+{"kind":"textbox","id":"sh/cvyxwz2p","slide":15,"text":"Sagduyu et al.: research question and setting","textPreview":"Sagduyu et al.: research question and setting","textChars":45,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/rapw3ulk","slide":15,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/q9gfupkz","slide":15,"text":"15","textPreview":"15","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/10ry943m","slide":15,"bbox":[98,192,10,10]}
+{"kind":"textbox","id":"sh/0zix0z21","slide":15,"text":"Application","textPreview":"Application","textChars":11,"textLines":1,"bbox":[126,184,1012,28]}
+{"kind":"textbox","id":"sh/zy9g7ulg","slide":15,"text":"Federated signal classification in a NextG communication setting. Each client trains locally and sends model parameters to a server.","textPreview":"Federated signal classification in a NextG communication setting. Each client trains locally and sends model parameters to a server.","textChars":132,"textLines":1,"bbox":[126,218,1012,70]}
+{"kind":"shape","id":"sh/exgfypkv","slide":15,"bbox":[98,352,10,10]}
+{"kind":"textbox","id":"sh/h4nexk32","slide":15,"text":"Threat","textPreview":"Threat","textChars":6,"textLines":1,"bbox":[126,344,1012,28]}
+{"kind":"textbox","id":"sh/g3exof2x","slide":15,"text":"An attacker chooses clients whose training labels are poisoned. The server may admit or reject clients from aggregation.","textPreview":"An attacker chooses clients whose training labels are poisoned. The server may admit or reject clients from aggregation.","textChars":120,"textLines":1,"bbox":[126,378,1012,70]}
+{"kind":"shape","id":"sh/idcvmdwn","slide":15,"bbox":[98,512,10,10]}
+{"kind":"textbox","id":"sh/jelcfid8","slide":15,"text":"Central tension","textPreview":"Central tension","textChars":15,"textLines":1,"bbox":[126,504,1012,28]}
+{"kind":"textbox","id":"sh/4fudonet","slide":15,"text":"Rejecting clients can remove poisoned contributions, but rejecting too many also reduces useful data and carries admission cost.","textPreview":"Rejecting clients can remove poisoned contributions, but rejecting too many also reduces useful data and carries admission cost.","textChars":128,"textLines":1,"bbox":[126,538,1012,60]}
+{"kind":"notes","id":"nt/v2pcrk","slide":15,"text":"Sagduyu, Erpek, and Shi, Securing NextG Systems against Poisoning Attacks on Federated Learning: A Game-Theoretic Solution, arXiv:2312.17164, Secs. II-III."}
+{"kind":"slide","id":"sl/y3edum","slide":16,"title":"Sagduyu et al.: game variables","textShapes":8}
+{"kind":"textbox","id":"sh/ju9c7218","slide":16,"text":"Sagduyu et al.: game variables","textPreview":"Sagduyu et al.: game variables","textChars":30,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/4vidg7it","slide":16,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/5wru9cjy","slide":16,"text":"16","textPreview":"16","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/upgbaxkb","slide":16,"text":"ATTACKER ACTION","textPreview":"ATTACKER ACTION","textChars":15,"textLines":1,"bbox":[96,185,490,20]}
+{"kind":"textbox","id":"sh/vqpc321w","slide":16,"text":"For two clients, p_i is the probability of attacking client i. For n clients, m is the number of poisoned clients.","textPreview":"For two clients, p_i is the probability of attacking client i. For n clients, m is the number of poisoned clients.","textChars":114,"textLines":1,"bbox":[96,212,490,58]}
+{"kind":"textbox","id":"sh/wrytc7ih","slide":16,"text":"DEFENDER ACTION","textPreview":"DEFENDER ACTION","textChars":15,"textLines":1,"bbox":[680,185,490,20]}
+{"kind":"textbox","id":"sh/hsru5cj2","slide":16,"text":"For two clients, q_i is the probability of admitting client i. For n clients, i is the number admitted.","textPreview":"For two clients, q_i is the probability of admitting client i. For n clients, i is the number admitted.","textChars":103,"textLines":1,"bbox":[680,212,490,58]}
+{"kind":"textbox","id":"sh/elkvmh0v","slide":16,"text":"OUTCOME STATISTIC","textPreview":"OUTCOME STATISTIC","textChars":17,"textLines":1,"bbox":[96,402,1070,20]}
+{"kind":"textbox","id":"sh/fmtcfm1g","slide":16,"text":"U_{k|i} denotes classification accuracy when i clients are admitted and k of them are poisoned.","textPreview":"U_{k|i} denotes classification accuracy when i clients are admitted and k of them are poisoned.","textChars":95,"textLines":1,"bbox":[96,429,1070,58]}
+{"kind":"notes","id":"nt/y3edum","slide":16,"text":"Sagduyu et al. (2023), Secs. IV-V, Eq. 1 and the definitions of p, q, i, m, and U_{k|i}."}
+{"kind":"slide","id":"sl/8134gp","slide":17,"title":"Sagduyu et al.: utility design","textShapes":8}
+{"kind":"textbox","id":"sh/r69knets","slide":17,"text":"Sagduyu et al.: utility design","textPreview":"Sagduyu et al.: utility design","textChars":30,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/s7ilwzax","slide":17,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/tsr2p4bi","slide":17,"text":"17","textPreview":"17","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/i1g3qpsv","slide":17,"text":"Both players value the resulting FL accuracy differently and pay their own action cost.","textPreview":"Both players value the resulting FL accuracy differently and pay their own action cost.","textChars":87,"textLines":1,"bbox":[74,148,1110,46]}
+{"kind":"shape","id":"sh/j29kjutg","slide":17,"bbox":[100,275,10,10]}
+{"kind":"textbox","id":"sh/43ilsza1","slide":17,"text":"Defender utility U_D(i,m)","textPreview":"Defender utility U_D(i,m)","textChars":25,"textLines":1,"bbox":[128,267,472,28]}
+{"kind":"textbox","id":"sh/54r2l4bm","slide":17,"text":"Expected classification reward when i are admitted and some are poisoned, minus i c_D for admitting clients.","textPreview":"Expected classification reward when i are admitted and some are poisoned, minus i c_D for admitting clients.","textChars":108,"textLines":1,"bbox":[128,301,472,72]}
+{"kind":"shape","id":"sh/2xk32tsf","slide":17,"bbox":[650,275,10,10]}
+{"kind":"textbox","id":"sh/3yt4vyt0","slide":17,"text":"Attacker utility U_A(i,m)","textPreview":"Attacker utility U_A(i,m)","textChars":25,"textLines":1,"bbox":[678,267,472,28]}
+{"kind":"textbox","id":"sh/3qhc7q9s","slide":17,"text":"Negative of the FL reward, minus m c_A for poisoning clients. Lower accuracy increases attacker utility.","textPreview":"Negative of the FL reward, minus m c_A for poisoning clients. Lower accuracy increases attacker utility.","textChars":104,"textLines":1,"bbox":[678,301,472,72]}
+{"kind":"textbox","id":"sh/ip8bels7","slide":17,"text":"Interpretation: the model treats admission and poisoning as costly strategic choices, rather than purely technical filters.","textPreview":"Interpretation: the model treats admission and poisoning as costly strategic choices, rather than purely technical filters.","textChars":123,"textLines":1,"bbox":[120,500,1020,43]}
+{"kind":"notes","id":"nt/8134gp","slide":17,"text":"Sagduyu et al. (2023), Eqs. 20-21. The attacker utility includes the negative FL reward and poisoning cost; the defender utility includes FL reward and admission cost."}
+{"kind":"slide","id":"sl/vh3irj","slide":18,"title":"Sagduyu et al.: solving for Nash equilibrium","textShapes":8}
+{"kind":"textbox","id":"sh/4jyxg36l","slide":18,"text":"Sagduyu et al.: solving for Nash equilibrium","textPreview":"Sagduyu et al.: solving for Nash equilibrium","textChars":44,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/3ipw7y50","slide":18,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/2hgvetof","slide":18,"text":"18","textPreview":"18","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/dored8n2","slide":18,"bbox":[98,188,10,10]}
+{"kind":"textbox","id":"sh/cnyxkn6h","slide":18,"text":"Two-client analysis","textPreview":"Two-client analysis","textChars":19,"textLines":1,"bbox":[126,180,1012,28]}
+{"kind":"textbox","id":"sh/rmpwbi5c","slide":18,"text":"The paper writes expected utilities over attack and admission probabilities. KKT conditions characterize constrained optima for p_i and q_i.","textPreview":"The paper writes expected utilities over attack and admission probabilities. KKT conditions characterize constrained optima for p_i and q_i.","textChars":140,"textLines":1,"bbox":[126,214,1012,72]}
+{"kind":"shape","id":"sh/qlgfidor","slide":18,"bbox":[98,361,10,10]}
+{"kind":"textbox","id":"sh/1crehsne","slide":18,"text":"n-client extension","textPreview":"n-client extension","textChars":18,"textLines":1,"bbox":[126,353,1012,28]}
+{"kind":"textbox","id":"sh/0rixon6t","slide":18,"text":"It computes best responses B_A(i) = arg max_m U_A(i,m) and B_D(m) = arg max_i U_D(i,m).","textPreview":"It computes best responses B_A(i) = arg max_m U_A(i,m) and B_D(m) = arg max_i U_D(i,m).","textChars":87,"textLines":1,"bbox":[126,387,1012,60]}
+{"kind":"shape","id":"sh/ehwne9sz","slide":18,"bbox":[98,510,10,10]}
+{"kind":"textbox","id":"sh/zi547e9k","slide":18,"text":"Nash condition","textPreview":"Nash condition","textChars":14,"textLines":1,"bbox":[126,502,1012,28]}
+{"kind":"textbox","id":"sh/0jy50ja5","slide":18,"text":"An equilibrium (i*,m*) lies in the intersection of the defender and attacker best-response correspondences.","textPreview":"An equilibrium (i*,m*) lies in the intersection of the defender and attacker best-response correspondences.","textChars":107,"textLines":1,"bbox":[126,536,1012,54]}
+{"kind":"notes","id":"nt/vh3irj","slide":18,"text":"Sagduyu et al. (2023), Secs. IV-V, Eqs. 5-19 and Eqs. 22-24. KKT conditions are used for the two-client constrained probabilities; best responses define the n-client Nash equilibrium."}
+{"kind":"slide","id":"sl/zfig9e","slide":19,"title":"Sagduyu et al.: findings and modeling lesson","textShapes":8}
+{"kind":"textbox","id":"sh/w3eh0ry1","slide":19,"text":"Sagduyu et al.: findings and modeling lesson","textPreview":"Sagduyu et al.: findings and modeling lesson","textChars":44,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/v2507mxg","slide":19,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/a1wzyhgv","slide":19,"text":"19","textPreview":"19","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/5s7idwfi","slide":19,"bbox":[98,188,10,10]}
+{"kind":"textbox","id":"sh/kreh4ryx","slide":19,"text":"Reported pattern","textPreview":"Reported pattern","textChars":16,"textLines":1,"bbox":[126,180,1012,28]}
+{"kind":"textbox","id":"sh/jq50bmxs","slide":19,"text":"As the total client count increases, their modeled defense utility per client decreases and attacker utility increases because poisoning opportunities grow.","textPreview":"As the total client count increases, their modeled defense utility per client decreases and attacker utility increases because poisoning ...","textChars":156,"textLines":1,"bbox":[126,214,1012,72]}
+{"kind":"shape","id":"sh/ipwz21g7","slide":19,"bbox":[98,355,10,10]}
+{"kind":"textbox","id":"sh/1w3y1cfe","slide":19,"text":"Cost sensitivity","textPreview":"Cost sensitivity","textChars":16,"textLines":1,"bbox":[126,347,1012,28]}
+{"kind":"textbox","id":"sh/0vuhs7yt","slide":19,"text":"Raising attack and defense costs changes equilibrium strategies and utilities. The paper visualizes this dependence.","textPreview":"Raising attack and defense costs changes equilibrium strategies and utilities. The paper visualizes this dependence.","textChars":116,"textLines":1,"bbox":[126,381,1012,62]}
+{"kind":"shape","id":"sh/mh4zedc7","slide":19,"bbox":[98,508,10,10]}
+{"kind":"textbox","id":"sh/nid0nyds","slide":19,"text":"Lesson","textPreview":"Lesson","textChars":6,"textLines":1,"bbox":[126,500,1012,28]}
+{"kind":"textbox","id":"sh/8jmhg3ud","slide":19,"text":"A simple Nash model can expose an incentive trade-off, but it abstracts away client identities, rich model updates, and time-varying attacker adaptation.","textPreview":"A simple Nash model can expose an incentive trade-off, but it abstracts away client identities, rich model updates, and time-varying atta...","textChars":153,"textLines":1,"bbox":[126,534,1012,60]}
+{"kind":"notes","id":"nt/zfig9e","slide":19,"text":"Sagduyu et al. (2023), Figs. 4-6 and Sec. V. The final sentence is an interpretation of the paper's deliberately compact model."}
+{"kind":"slide","id":"sl/beulkq","slide":20,"title":"Case study 2: FedGame (Jia et al., 2023)","textShapes":4}
+{"kind":"textbox","id":"sh/mtormh07","slide":20,"text":"Case study 2: FedGame (Jia et al., 2023)","textPreview":"Case study 2: FedGame (Jia et al., 2023)","textChars":40,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/9gzaxwzy","slide":20,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/8vq9orid","slide":20,"text":"20","textPreview":"20","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/vihszmho","slide":20,"bbox":[74,175,9,330]}
+{"kind":"textbox","id":"sh/ah8rqh0j","slide":20,"text":"A minimax defense against dynamic backdoor attacks in centralized FL","textPreview":"A minimax defense against dynamic backdoor attacks in centralized FL","textChars":68,"textLines":1,"bbox":[116,210,900,160]}
+{"kind":"textbox","id":"sh/xkza1wzu","slide":20,"text":"Paper-by-paper explanation: problem, model, solution, evidence, and interpretation","textPreview":"Paper-by-paper explanation: problem, model, solution, evidence, and interpretation","textChars":82,"textLines":1,"bbox":[118,434,850,34]}
+{"kind":"notes","id":"nt/beulkq","slide":20,"text":""}
+{"kind":"slide","id":"sl/77d1xf","slide":21,"title":"FedGame: threat model and objective","textShapes":8}
+{"kind":"textbox","id":"sh/vidkr6po","slide":21,"text":"FedGame: threat model and objective","textPreview":"FedGame: threat model and objective","textChars":35,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/wjmlkbq9","slide":21,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/h4v2tg7u","slide":21,"text":"21","textPreview":"21","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/mdkje187","slide":21,"bbox":[98,188,10,10]}
+{"kind":"textbox","id":"sh/netkn6ps","slide":21,"text":"Threat","textPreview":"Threat","textChars":6,"textLines":1,"bbox":[126,180,1012,28]}
+{"kind":"textbox","id":"sh/8f2lgbqd","slide":21,"text":"Compromised FL clients inject a trigger and target label so trigger-embedded inputs are classified as the attacker's chosen class.","textPreview":"Compromised FL clients inject a trigger and target label so trigger-embedded inputs are classified as the attacker's chosen class.","textChars":130,"textLines":1,"bbox":[126,214,1012,66]}
+{"kind":"shape","id":"sh/9gb2pw7y","slide":21,"bbox":[98,348,10,10]}
+{"kind":"textbox","id":"sh/y90jqh8b","slide":21,"text":"Why a game","textPreview":"Why a game","textChars":10,"textLines":1,"bbox":[126,340,1012,28]}
+{"kind":"textbox","id":"sh/za9kjmpg","slide":21,"text":"The attacker changes its poisoning ratio or trigger to remain effective; the server changes how it identifies and weights client updates.","textPreview":"The attacker changes its poisoning ratio or trigger to remain effective; the server changes how it identifies and weights client updates.","textChars":137,"textLines":1,"bbox":[126,374,1012,66]}
+{"kind":"shape","id":"sh/nid4nalk","slide":21,"bbox":[98,508,10,10]}
+{"kind":"textbox","id":"sh/mhk3e5kz","slide":21,"text":"Objective","textPreview":"Objective","textChars":9,"textLines":1,"bbox":[126,500,1012,28]}
+{"kind":"textbox","id":"sh/9kvmpk3a","slide":21,"text":"Maintain clean test accuracy while lowering attack success rate against dynamic backdoor behavior.","textPreview":"Maintain clean test accuracy while lowering attack success rate against dynamic backdoor behavior.","textChars":98,"textLines":1,"bbox":[126,534,1012,54]}
+{"kind":"notes","id":"nt/77d1xf","slide":21,"text":"Jia et al., FedGame: A Game-Theoretic Defense against Backdoor Attacks in Federated Learning, NeurIPS 2023, Abstract and Sec. 4."}
+{"kind":"slide","id":"sl/02cg8c","slide":22,"title":"FedGame: genuine score and weighted aggregation","textShapes":10}
+{"kind":"textbox","id":"sh/x832h0r6","slide":22,"text":"FedGame: genuine score and weighted aggregation","textPreview":"FedGame: genuine score and weighted aggregation","textChars":47,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/a5cj658v","slide":22,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/v6lkfa9g","slide":22,"text":"22","textPreview":"22","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/o3u14vqp","slide":22,"text":"FedGame assigns each client a genuine score p_i^t and uses it as a weight in the global update.","textPreview":"FedGame assigns each client a genuine score p_i^t and uses it as a weight in the global update.","textChars":95,"textLines":1,"bbox":[74,148,1110,44]}
+{"kind":"textbox","id":"sh/9432d0ra","slide":22,"text":"REVERSE-ENGINEER","textPreview":"REVERSE-ENGINEER","textChars":16,"textLines":1,"bbox":[98,250,330,20]}
+{"kind":"textbox","id":"sh/mhsj2l8j","slide":22,"text":"Build an auxiliary global model from all local updates, then infer a candidate trigger and target class.","textPreview":"Build an auxiliary global model from all local updates, then infer a candidate trigger and target class.","textChars":104,"textLines":1,"bbox":[98,277,330,58]}
+{"kind":"textbox","id":"sh/n210bq94","slide":22,"text":"SCORE","textPreview":"SCORE","textChars":5,"textLines":1,"bbox":[475,250,330,20]}
+{"kind":"textbox","id":"sh/sze1gzqt","slide":22,"text":"For each local model, measure how often trigger-embedded clean inputs receive the inferred target label.","textPreview":"For each local model, measure how often trigger-embedded clean inputs receive the inferred target label.","textChars":104,"textLines":1,"bbox":[475,277,330,58]}
+{"kind":"textbox","id":"sh/t0n2p4re","slide":22,"text":"AGGREGATE","textPreview":"AGGREGATE","textChars":9,"textLines":1,"bbox":[852,250,330,20]}
+{"kind":"textbox","id":"sh/l8japkr2","slide":22,"text":"Lower p_i^t for suspicious behavior means a smaller contribution to the global model update.","textPreview":"Lower p_i^t for suspicious behavior means a smaller contribution to the global model update.","textChars":92,"textLines":1,"bbox":[852,277,330,58]}
+{"kind":"textbox","id":"sh/k7a9wfqh","slide":22,"text":"p_i^t = 1 - fraction of trigger-embedded server-clean inputs predicted as the inferred target class","textPreview":"p_i^t = 1 - fraction of trigger-embedded server-clean inputs predicted as the inferred target class","textChars":99,"textLines":1,"bbox":[130,495,1020,42]}
+{"kind":"notes","id":"nt/02cg8c","slide":22,"text":"Jia et al. (2023), Sec. 4.1, Eqs. 1-2. The auxiliary model construction and use of trigger reverse engineering are detailed in Sec. 4.2."}
+{"kind":"slide","id":"sl/z46vpp","slide":23,"title":"FedGame: the minimax formulation","textShapes":8}
+{"kind":"textbox","id":"sh/0nypkvu9","slide":23,"text":"FedGame: the minimax formulation","textPreview":"FedGame: the minimax formulation","textChars":32,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/f2p8bqdo","slide":23,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/e1g7ilc3","slide":23,"text":"23","textPreview":"23","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/d07q9gvy","slide":23,"bbox":[98,184,10,10]}
+{"kind":"textbox","id":"sh/szypgbud","slide":23,"text":"Defender variable","textPreview":"Defender variable","textChars":17,"textLines":1,"bbox":[126,176,1012,28]}
+{"kind":"textbox","id":"sh/ry5876ds","slide":23,"text":"Reverse-engineered trigger δ_re and target class y_re. The defender seeks low scores for malicious clients and high scores for benign clients.","textPreview":"Reverse-engineered trigger δ_re and target class y_re. The defender seeks low scores for malicious clients and high scores for benign cli...","textChars":142,"textLines":1,"bbox":[126,210,1012,64]}
+{"kind":"shape","id":"sh/qxw7e1c7","slide":23,"bbox":[98,348,10,10]}
+{"kind":"textbox","id":"sh/5wnq5gvm","slide":23,"text":"Attacker variable","textPreview":"Attacker variable","textChars":17,"textLines":1,"bbox":[126,340,1012,28]}
+{"kind":"textbox","id":"sh/4vepcbu1","slide":23,"text":"Per-client backdoor ratio r_i^t and trigger δ. A larger r_i^t can improve attack success but tends to reduce genuine score.","textPreview":"Per-client backdoor ratio r_i^t and trigger δ. A larger r_i^t can improve attack success but tends to reduce genuine score.","textChars":123,"textLines":1,"bbox":[126,374,1012,64]}
+{"kind":"shape","id":"sh/2xsv6t8n","slide":23,"bbox":[98,508,10,10]}
+{"kind":"textbox","id":"sh/ny1wzeps","slide":23,"text":"Game objective","textPreview":"Game objective","textChars":14,"textLines":1,"bbox":[126,500,1012,28]}
+{"kind":"textbox","id":"sh/ozaxsjqd","slide":23,"text":"The paper writes a minimax objective that combines score separation with λ times the poisoning ratios of malicious clients.","textPreview":"The paper writes a minimax objective that combines score separation with λ times the poisoning ratios of malicious clients.","textChars":123,"textLines":1,"bbox":[126,534,1012,54]}
+{"kind":"notes","id":"nt/z46vpp","slide":23,"text":"Jia et al. (2023), Sec. 4.1, Eqs. 3-5. The attacker objective explicitly includes the trade-off term lambda sum_i r_i^t."}
+{"kind":"slide","id":"sl/shfkna","slide":24,"title":"FedGame: how the defender solves the game","textShapes":8}
+{"kind":"textbox","id":"sh/dc7e18fm","slide":24,"text":"FedGame: how the defender solves the game","textPreview":"FedGame: how the defender solves the game","textChars":41,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/q9gvqtgb","slide":24,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/rapwzyxw","slide":24,"text":"24","textPreview":"24","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/0fidwned","slide":24,"bbox":[98,186,10,10]}
+{"kind":"textbox","id":"sh/1gre58fy","slide":24,"text":"Unknown malicious set","textPreview":"Unknown malicious set","textChars":21,"textLines":1,"bbox":[126,178,1012,28]}
+{"kind":"textbox","id":"sh/edgvudw7","slide":24,"text":"The server does not know which selected clients are compromised, so it cannot directly solve the ideal objective.","textPreview":"The server does not know which selected clients are compromised, so it cannot directly solve the ideal objective.","textChars":113,"textLines":1,"bbox":[126,212,1012,62]}
+{"kind":"shape","id":"sh/ze9w3ixs","slide":24,"bbox":[98,344,10,10]}
+{"kind":"textbox","id":"sh/o3ix0ne9","slide":24,"text":"Auxiliary global model","textPreview":"Auxiliary global model","textChars":22,"textLines":1,"bbox":[126,336,1012,28]}
+{"kind":"textbox","id":"sh/94re9sfu","slide":24,"text":"Average all submitted updates into an auxiliary model. Under a backdoor, this model should still expose trigger-target behavior.","textPreview":"Average all submitted updates into an auxiliary model. Under a backdoor, this model should still expose trigger-target behavior.","textChars":128,"textLines":1,"bbox":[126,370,1012,66]}
+{"kind":"shape","id":"sh/9w7mlgjm","slide":24,"bbox":[98,510,10,10]}
+{"kind":"textbox","id":"sh/8ve5sbi1","slide":24,"text":"Operational defense","textPreview":"Operational defense","textChars":19,"textLines":1,"bbox":[126,502,1012,28]}
+{"kind":"textbox","id":"sh/nu54j61g","slide":24,"text":"Apply any compatible trigger reverse-engineering method to the auxiliary model, compute every genuine score, then aggregate with those weights.","textPreview":"Apply any compatible trigger reverse-engineering method to the auxiliary model, compute every genuine score, then aggregate with those we...","textChars":143,"textLines":1,"bbox":[126,536,1012,54]}
+{"kind":"notes","id":"nt/shfkna","slide":24,"text":"Jia et al. (2023), Sec. 4.2. The paper uses Neural Cleanse in its experiments, but the framework is stated to be compatible with other trigger reverse-engineering methods."}
+{"kind":"slide","id":"sl/b96p54","slide":25,"title":"FedGame: how the attacker approximates a best response","textShapes":8}
+{"kind":"textbox","id":"sh/ovmh4zmp","slide":25,"text":"FedGame: how the attacker approximates a best response","textPreview":"FedGame: how the attacker approximates a best response","textChars":54,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/3udgvu54","slide":25,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/2t4z2p4j","slide":25,"text":"25","textPreview":"25","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/18vytkny","slide":25,"bbox":[98,183,10,10]}
+{"kind":"textbox","id":"sh/g7mx0fmd","slide":25,"text":"Private validation set","textPreview":"Private validation set","textChars":22,"textLines":1,"bbox":[126,175,1012,28]}
+{"kind":"textbox","id":"sh/f6tgra5s","slide":25,"text":"A malicious client reserves a portion of local data, for example 10%, to estimate whether its locally trained model still appears genuine.","textPreview":"A malicious client reserves a portion of local data, for example 10%, to estimate whether its locally trained model still appears genuine.","textChars":138,"textLines":1,"bbox":[126,209,1012,64]}
+{"kind":"shape","id":"sh/e5kfy54n","slide":25,"bbox":[98,347,10,10]}
+{"kind":"textbox","id":"sh/l4fy5o3i","slide":25,"text":"Approximate score","textPreview":"Approximate score","textChars":17,"textLines":1,"bbox":[126,339,1012,28]}
+{"kind":"textbox","id":"sh/036hcjmx","slide":25,"text":"Because the attacker does not know the defender's reverse-engineered trigger, it estimates a score using its own trigger and target.","textPreview":"Because the attacker does not know the defender's reverse-engineered trigger, it estimates a score using its own trigger and target.","textChars":132,"textLines":1,"bbox":[126,373,1012,64]}
+{"kind":"shape","id":"sh/m1wrq90b","slide":25,"bbox":[98,511,10,10]}
+{"kind":"textbox","id":"sh/725sjehw","slide":25,"text":"Grid search","textPreview":"Grid search","textChars":11,"textLines":1,"bbox":[126,503,1012,28]}
+{"kind":"textbox","id":"sh/83e9sjih","slide":25,"text":"It searches r_i^t for the largest estimated genuine score plus λr_i^t, then launches a standard backdoor attack with that ratio.","textPreview":"It searches r_i^t for the largest estimated genuine score plus λr_i^t, then launches a standard backdoor attack with that ratio.","textChars":128,"textLines":1,"bbox":[126,537,1012,54]}
+{"kind":"notes","id":"nt/b96p54","slide":25,"text":"Jia et al. (2023), Sec. 4.3. This is an approximate attacker solution because the attacker does not observe the defender's inferred trigger or scores for benign clients."}
+{"kind":"slide","id":"sl/eziee2","slide":26,"title":"FedGame: evidence, metrics, and boundary","textShapes":8}
+{"kind":"textbox","id":"sh/o7u1gf6h","slide":26,"text":"FedGame: evidence, metrics, and boundary","textPreview":"FedGame: evidence, metrics, and boundary","textChars":40,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/n6l0na5w","slide":26,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/m5cje5ob","slide":26,"text":"26","textPreview":"26","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/xwnitkny","slide":26,"bbox":[98,183,10,10]}
+{"kind":"textbox","id":"sh/wbu1kf6d","slide":26,"text":"Metrics","textPreview":"Metrics","textChars":7,"textLines":1,"bbox":[126,175,1012,28]}
+{"kind":"textbox","id":"sh/bal0ra5s","slide":26,"text":"Test accuracy measures clean performance; attack success rate measures the fraction of trigger inputs predicted as the target class.","textPreview":"Test accuracy measures clean performance; attack success rate measures the fraction of trigger inputs predicted as the target class.","textChars":132,"textLines":1,"bbox":[126,209,1012,60]}
+{"kind":"shape","id":"sh/a9cji5on","slide":26,"bbox":[98,343,10,10]}
+{"kind":"textbox","id":"sh/l0nix4na","slide":26,"text":"Evaluation","textPreview":"Evaluation","textChars":10,"textLines":1,"bbox":[126,335,1012,28]}
+{"kind":"textbox","id":"sh/kze1oz6p","slide":26,"text":"The paper evaluates MNIST and CIFAR-10 under scaling, DBA, and Neurotoxin attacks, in IID and non-IID settings.","textPreview":"The paper evaluates MNIST and CIFAR-10 under scaling, DBA, and Neurotoxin attacks, in IID and non-IID settings.","textChars":111,"textLines":1,"bbox":[126,369,1012,62]}
+{"kind":"shape","id":"sh/epkzml03","slide":26,"bbox":[98,506,10,10]}
+{"kind":"textbox","id":"sh/fqdgfq1o","slide":26,"text":"Reported limitation","textPreview":"Reported limitation","textChars":19,"textLines":1,"bbox":[126,498,1012,28]}
+{"kind":"textbox","id":"sh/grmhovi9","slide":26,"text":"The defense needs a server clean dataset and trigger reverse engineering. The authors report an average 0.148 seconds per client score on one NVIDIA 2080 Ti GPU.","textPreview":"The defense needs a server clean dataset and trigger reverse engineering. The authors report an average 0.148 seconds per client score on...","textChars":161,"textLines":1,"bbox":[126,532,1012,62]}
+{"kind":"notes","id":"nt/eziee2","slide":26,"text":"Jia et al. (2023), Secs. 6.1-6.3. Metrics are defined in Sec. 6.1. Computation cost is reported in Sec. 6.2. Do not generalize the measured runtime beyond the stated hardware and setup."}
+{"kind":"slide","id":"sl/q2e4ms","slide":27,"title":"Case study 3: Meta Stackelberg Game (Li et al., 2024)","textShapes":4}
+{"kind":"textbox","id":"sh/kf61c7e5","slide":27,"text":"Case study 3: Meta Stackelberg Game (Li et al., 2024)","textPreview":"Case study 3: Meta Stackelberg Game (Li et al., 2024)","textChars":53,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/zexkj2xk","slide":27,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/yd4jaxwz","slide":27,"text":"27","textPreview":"27","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/xcv2hsfu","slide":27,"bbox":[74,175,9,330]}
+{"kind":"textbox","id":"sh/cbm18ny9","slide":27,"text":"A Bayesian Stackelberg Markov game with meta-learned online adaptation","textPreview":"A Bayesian Stackelberg Markov game with meta-learned online adaptation","textChars":70,"textLines":1,"bbox":[116,210,900,160]}
+{"kind":"textbox","id":"sh/badkfixo","slide":27,"text":"Paper-by-paper explanation: problem, model, solution, evidence, and interpretation","textPreview":"Paper-by-paper explanation: problem, model, solution, evidence, and interpretation","textChars":82,"textLines":1,"bbox":[118,434,850,34]}
+{"kind":"notes","id":"nt/q2e4ms","slide":27,"text":""}
+{"kind":"slide","id":"sl/hqndv6","slide":28,"title":"Meta Stackelberg: problem and two-stage approach","textShapes":8}
+{"kind":"textbox","id":"sh/5czat4n2","slide":28,"text":"Meta Stackelberg: problem and two-stage approach","textPreview":"Meta Stackelberg: problem and two-stage approach","textChars":48,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/i9ori9ob","slide":28,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/3ax8ru5w","slide":28,"text":"28","textPreview":"28","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/g769gz65","slide":28,"bbox":[98,184,10,10]}
+{"kind":"textbox","id":"sh/h8fqp4nq","slide":28,"text":"Problem","textPreview":"Problem","textChars":7,"textLines":1,"bbox":[126,176,1012,28]}
+{"kind":"textbox","id":"sh/u5orepof","slide":28,"text":"An FL defender faces unknown, adaptive, or mixed poisoning attacks. A fixed defense policy can fail when the attack type changes.","textPreview":"An FL defender faces unknown, adaptive, or mixed poisoning attacks. A fixed defense policy can fail when the attack type changes.","textChars":129,"textLines":1,"bbox":[126,210,1012,66]}
+{"kind":"shape","id":"sh/v6x8nu50","slide":28,"bbox":[98,347,10,10]}
+{"kind":"textbox","id":"sh/8369cf69","slide":28,"text":"Pre-training","textPreview":"Pre-training","textChars":12,"textLines":1,"bbox":[126,339,1012,28]}
+{"kind":"textbox","id":"sh/t4fqlknu","slide":28,"text":"Create a simulated environment from generated data and an attack domain, then train a defense meta-policy over attack types.","textPreview":"Create a simulated environment from generated data and an attack domain, then train a defense meta-policy over attack types.","textChars":124,"textLines":1,"bbox":[126,373,1012,66]}
+{"kind":"shape","id":"sh/pobedkj2","slide":28,"bbox":[98,510,10,10]}
+{"kind":"textbox","id":"sh/onixkfih","slide":28,"text":"Online adaptation","textPreview":"Online adaptation","textChars":17,"textLines":1,"bbox":[126,502,1012,28]}
+{"kind":"textbox","id":"sh/329wba1w","slide":28,"text":"Use observed trajectory data from real FL rounds to update the defense policy during deployment.","textPreview":"Use observed trajectory data from real FL rounds to update the defense policy during deployment.","textChars":96,"textLines":1,"bbox":[126,536,1012,54]}
+{"kind":"notes","id":"nt/hqndv6","slide":28,"text":"Li et al., Meta Stackelberg Game: Robust Federated Learning against Adaptive and Mixed Poisoning Attacks, arXiv:2410.17431, Fig. 1 and Sec. II."}
+{"kind":"slide","id":"sl/f0bpsg","slide":29,"title":"Meta Stackelberg: attack types encode uncertainty","textShapes":9}
+{"kind":"textbox","id":"sh/wbqxkf6x","slide":29,"text":"Meta Stackelberg: attack types encode uncertainty","textPreview":"Meta Stackelberg: attack types encode uncertainty","textChars":49,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/vahgrapc","slide":29,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/a98fi58r","slide":29,"text":"29","textPreview":"29","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/5gjyxk7e","slide":29,"text":"OBJECTIVE Ω1","textPreview":"OBJECTIVE Ω1","textChars":12,"textLines":1,"bbox":[96,185,300,20]}
+{"kind":"textbox","id":"sh/kfahof6t","slide":29,"text":"Untargeted or targeted attack objective.","textPreview":"Untargeted or targeted attack objective.","textChars":40,"textLines":1,"bbox":[96,212,300,58]}
+{"kind":"textbox","id":"sh/jehgvapo","slide":29,"text":"METHOD Ω2","textPreview":"METHOD Ω2","textChars":9,"textLines":1,"bbox":[490,185,300,20]}
+{"kind":"textbox","id":"sh/id8zmpo3","slide":29,"text":"Algorithm that generates the attack policy, such as IPM or DBA.","textPreview":"Algorithm that generates the attack policy, such as IPM or DBA.","textChars":63,"textLines":1,"bbox":[490,212,300,58]}
+{"kind":"textbox","id":"sh/lkfyl07a","slide":29,"text":"CONFIGURATION Ω3","textPreview":"CONFIGURATION Ω3","textChars":16,"textLines":1,"bbox":[884,185,300,20]}
+{"kind":"textbox","id":"sh/0j6xcvqp","slide":29,"text":"Hyperparameters, trigger, target label, and attacker knowledge.","textPreview":"Hyperparameters, trigger, target label, and attacker knowledge.","textChars":63,"textLines":1,"bbox":[884,212,300,58]}
+{"kind":"textbox","id":"sh/6hk3m1cz","slide":29,"text":"A joint attack type ξ combines these elements across malicious clients. The defender models known types as an attack domain Ξ with a prior Q(Ξ).","textPreview":"A joint attack type ξ combines these elements across malicious clients. The defender models known types as an attack domain Ξ with a prio...","textChars":144,"textLines":1,"bbox":[128,455,1020,64]}
+{"kind":"notes","id":"nt/f0bpsg","slide":29,"text":"Li et al. (2024), Sec. II-A(d), definition of attack type and attack domain."}
+{"kind":"slide","id":"sl/1anfx4","slide":30,"title":"Meta Stackelberg: Bayesian Stackelberg Markov game","textShapes":12}
+{"kind":"textbox","id":"sh/4fy9gnad","slide":30,"text":"Meta Stackelberg: Bayesian Stackelberg Markov game","textPreview":"Meta Stackelberg: Bayesian Stackelberg Markov game","textChars":50,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/jep872ts","slide":30,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/idgrexs7","slide":30,"text":"30","textPreview":"30","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/tk7qdcbu","slide":30,"text":"STATE S","textPreview":"STATE S","textChars":7,"textLines":1,"bbox":[96,180,330,20]}
+{"kind":"textbox","id":"sh/sjy9k7a9","slide":30,"text":"Global model weights w_g^t at the current FL round.","textPreview":"Global model weights w_g^t at the current FL round.","textChars":51,"textLines":1,"bbox":[96,207,330,58]}
+{"kind":"textbox","id":"sh/rip8b2to","slide":30,"text":"DEFENDER ACTION A_D","textPreview":"DEFENDER ACTION A_D","textChars":19,"textLines":1,"bbox":[475,180,330,20]}
+{"kind":"textbox","id":"sh/6hgrixs3","slide":30,"text":"A combination of robust aggregation Aggr(.) and post-training defense h(.).","textPreview":"A combination of robust aggregation Aggr(.) and post-training defense h(.).","textChars":75,"textLines":1,"bbox":[475,207,330,58]}
+{"kind":"textbox","id":"sh/1orahcb6","slide":30,"text":"ATTACKER ACTION A_Ξ","textPreview":"ATTACKER ACTION A_Ξ","textChars":19,"textLines":1,"bbox":[854,180,330,20]}
+{"kind":"textbox","id":"sh/gni9o7al","slide":30,"text":"Joint malicious model updates, selected according to attacker type ξ.","textPreview":"Joint malicious model updates, selected according to attacker type ξ.","textChars":69,"textLines":1,"bbox":[854,207,330,58]}
+{"kind":"textbox","id":"sh/utsvahsf","slide":30,"text":"TRANSITION T","textPreview":"TRANSITION T","textChars":12,"textLines":1,"bbox":[96,400,500,20]}
+{"kind":"textbox","id":"sh/vu1w3mt0","slide":30,"text":"The aggregation rule converts current state and joint actions into the next global model.","textPreview":"The aggregation rule converts current state and joint actions into the next global model.","textChars":89,"textLines":1,"bbox":[96,427,500,58]}
+{"kind":"textbox","id":"sh/gvadcral","slide":30,"text":"REWARDS R_D AND R_Ξ","textPreview":"REWARDS R_D AND R_Ξ","textChars":19,"textLines":1,"bbox":[682,400,500,20]}
+{"kind":"textbox","id":"sh/hw3e5wb6","slide":30,"text":"Defender seeks lower post-defense loss; attacker seeks the opposing attack objective.","textPreview":"Defender seeks lower post-defense loss; attacker seeks the opposing attack objective.","textChars":85,"textLines":1,"bbox":[682,427,500,58]}
+{"kind":"notes","id":"nt/1anfx4","slide":30,"text":"Li et al. (2024), Sec. II-A, Bayesian Stackelberg Markov game tuple and bullet definitions. The paper writes the tuple as <S, A_D, A_ξ, T, r, gamma, H>."}
+{"kind":"slide","id":"sl/v9ex1f","slide":31,"title":"Meta Stackelberg: from BSE to meta-SE","textShapes":8}
+{"kind":"textbox","id":"sh/n6xs7ep4","slide":31,"text":"Meta Stackelberg: from BSE to meta-SE","textPreview":"Meta Stackelberg: from BSE to meta-SE","textChars":37,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/o76t0j6p","slide":31,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/p8fa9o7a","slide":31,"text":"31","textPreview":"31","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/eh4ru9on","slide":31,"bbox":[98,186,10,10]}
+{"kind":"textbox","id":"sh/fixs3up8","slide":31,"text":"Bayesian Stackelberg equilibrium","textPreview":"Bayesian Stackelberg equilibrium","textChars":32,"textLines":1,"bbox":[126,178,1012,28]}
+{"kind":"textbox","id":"sh/gj69wz6t","slide":31,"text":"The defender chooses a policy that maximizes expected reward over attack types while each type chooses a best response.","textPreview":"The defender chooses a policy that maximizes expected reward over attack types while each type chooses a best response.","textChars":119,"textLines":1,"bbox":[126,212,1012,68]}
+{"kind":"shape","id":"sh/1kfa547e","slide":31,"bbox":[98,351,10,10]}
+{"kind":"textbox","id":"sh/yd8b6tor","slide":31,"text":"Limitation of fixed BSE","textPreview":"Limitation of fixed BSE","textChars":23,"textLines":1,"bbox":[126,343,1012,28]}
+{"kind":"textbox","id":"sh/zehsfypc","slide":31,"text":"It is ex-ante: the policy is chosen from the prior before the defender uses new online evidence about the hidden type.","textPreview":"It is ex-ante: the policy is chosen from the prior before the defender uses new online evidence about the hidden type.","textChars":118,"textLines":1,"bbox":[126,377,1012,64]}
+{"kind":"shape","id":"sh/zex0r2hg","slide":31,"bbox":[98,508,10,10]}
+{"kind":"textbox","id":"sh/edozix0v","slide":31,"text":"Meta-Stackelberg equilibrium","textPreview":"Meta-Stackelberg equilibrium","textChars":28,"textLines":1,"bbox":[126,500,1012,28]}
+{"kind":"textbox","id":"sh/10fitcz6","slide":31,"text":"The leader optimizes an initial policy together with a gradient-based adaptation step using a sampled online trajectory.","textPreview":"The leader optimizes an initial policy together with a gradient-based adaptation step using a sampled online trajectory.","textChars":120,"textLines":1,"bbox":[126,534,1012,58]}
+{"kind":"notes","id":"nt/v9ex1f","slide":31,"text":"Li et al. (2024), Sec. III-B, Definitions 1 and 2. The distinction between BSE and meta-SE is the online adaptation of the defender policy."}
+{"kind":"slide","id":"sl/1jeqd1","slide":32,"title":"Meta Stackelberg: learning the policy","textShapes":8}
+{"kind":"textbox","id":"sh/w7a90bi1","slide":32,"text":"Meta Stackelberg: learning the policy","textPreview":"Meta Stackelberg: learning the policy","textChars":37,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/v61sr61g","slide":32,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/a5sry10v","slide":32,"text":"32","textPreview":"32","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/9kjqpwja","slide":32,"bbox":[98,182,10,10]}
+{"kind":"textbox","id":"sh/8ja9wrip","slide":32,"text":"Nested optimization","textPreview":"Nested optimization","textChars":19,"textLines":1,"bbox":[126,174,1012,28]}
+{"kind":"textbox","id":"sh/ni18n614","slide":32,"text":"For sampled attack types, an inner loop learns an attacker best response while the current defender policy remains fixed.","textPreview":"For sampled attack types, an inner loop learns an attacker best response while the current defender policy remains fixed.","textChars":121,"textLines":1,"bbox":[126,208,1012,62]}
+{"kind":"shape","id":"sh/mh8ru10j","slide":32,"bbox":[98,344,10,10]}
+{"kind":"textbox","id":"sh/tg3a10ze","slide":32,"text":"Outer update","textPreview":"Outer update","textChars":12,"textLines":1,"bbox":[126,336,1012,28]}
+{"kind":"textbox","id":"sh/sfu98vi9","slide":32,"text":"The returned attacker policy helps estimate the defender value gradient and update the defense meta-policy.","textPreview":"The returned attacker policy helps estimate the defender value gradient and update the defense meta-policy.","textChars":107,"textLines":1,"bbox":[126,370,1012,62]}
+{"kind":"shape","id":"sh/2dwrad4v","slide":32,"bbox":[98,506,10,10]}
+{"kind":"textbox","id":"sh/3e583ilg","slide":32,"text":"First-order variant","textPreview":"First-order variant","textChars":19,"textLines":1,"bbox":[126,498,1012,28]}
+{"kind":"textbox","id":"sh/ofe9c3m1","slide":32,"text":"To avoid expensive Hessian estimation, the paper introduces Reptile meta-SL, a fully first-order pre-training method.","textPreview":"To avoid expensive Hessian estimation, the paper introduces Reptile meta-SL, a fully first-order pre-training method.","textChars":117,"textLines":1,"bbox":[126,532,1012,60]}
+{"kind":"notes","id":"nt/1jeqd1","slide":32,"text":"Li et al. (2024), Sec. III-C and Algorithm 1. The paper calls its two-timescale policy-gradient method meta-Stackelberg learning and describes a Reptile meta-SL variant."}
+{"kind":"slide","id":"sl/ouuvin","slide":33,"title":"Meta Stackelberg: experiments and interpretation","textShapes":8}
+{"kind":"textbox","id":"sh/m9crmlo7","slide":33,"text":"Meta Stackelberg: experiments and interpretation","textPreview":"Meta Stackelberg: experiments and interpretation","textChars":48,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/9c3qx0ni","slide":33,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/8bu9ov6d","slide":33,"text":"33","textPreview":"33","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/ve58za5o","slide":33,"bbox":[98,182,10,10]}
+{"kind":"textbox","id":"sh/adcrq5o3","slide":33,"text":"Threat coverage","textPreview":"Threat coverage","textChars":15,"textLines":1,"bbox":[126,174,1012,28]}
+{"kind":"textbox","id":"sh/hgnq10nu","slide":33,"text":"Untargeted IPM, LMP, and RL attacks; targeted BFL, DBA, and BRL attacks; and mixed attacks are considered.","textPreview":"Untargeted IPM, LMP, and RL attacks; targeted BFL, DBA, and BRL attacks; and mixed attacks are considered.","textChars":106,"textLines":1,"bbox":[126,208,1012,62]}
+{"kind":"shape","id":"sh/wfe9sf69","slide":33,"bbox":[98,344,10,10]}
+{"kind":"textbox","id":"sh/j2583a50","slide":33,"text":"Metrics","textPreview":"Metrics","textChars":7,"textLines":1,"bbox":[126,336,1012,28]}
+{"kind":"textbox","id":"sh/i1wru5of","slide":33,"text":"The paper reports global-model accuracy and backdoor accuracy. For its Table 2, accuracy is higher and backdoor accuracy is lower.","textPreview":"The paper reports global-model accuracy and backdoor accuracy. For its Table 2, accuracy is higher and backdoor accuracy is lower.","textChars":130,"textLines":1,"bbox":[126,370,1012,62]}
+{"kind":"shape","id":"sh/o3yxwb2p","slide":33,"bbox":[98,506,10,10]}
+{"kind":"textbox","id":"sh/947ypgju","slide":33,"text":"Boundary","textPreview":"Boundary","textChars":8,"textLines":1,"bbox":[126,498,1012,28]}
+{"kind":"textbox","id":"sh/m1gfulkj","slide":33,"text":"The method assumes a simulator, an attack domain, and a way to estimate rewards online. White-box, gray-box, and black-box settings have different practical strength.","textPreview":"The method assumes a simulator, an attack domain, and a way to estimate rewards online. White-box, gray-box, and black-box settings have ...","textChars":166,"textLines":1,"bbox":[126,532,1012,62]}
+{"kind":"notes","id":"nt/ouuvin","slide":33,"text":"Li et al. (2024), Sec. IV and Table 2. The practical boundary follows the paper's explicit white-box, gray-box, and black-box evaluations and online reward-estimation discussion."}
+{"kind":"slide","id":"sl/i3ou9y","slide":34,"title":"Case study 4: pFedGame (Behera and Chakraborty, 2024)","textShapes":4}
+{"kind":"textbox","id":"sh/s7qlsv29","slide":34,"text":"Case study 4: pFedGame (Behera and Chakraborty, 2024)","textPreview":"Case study 4: pFedGame (Behera and Chakraborty, 2024)","textChars":53,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/76hkjq1o","slide":34,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/6583qlkj","slide":34,"text":"34","textPreview":"34","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/hwj2p0j6","slide":34,"bbox":[74,175,9,330]}
+{"kind":"textbox","id":"sh/gvalwv2l","slide":34,"text":"A DFL game for peer selection and local aggregation weights","textPreview":"A DFL game for peer selection and local aggregation weights","textChars":59,"textLines":1,"bbox":[116,210,900,160]}
+{"kind":"textbox","id":"sh/fa1knq10","slide":34,"text":"Paper-by-paper explanation: problem, model, solution, evidence, and interpretation","textPreview":"Paper-by-paper explanation: problem, model, solution, evidence, and interpretation","textChars":82,"textLines":1,"bbox":[118,434,850,34]}
+{"kind":"notes","id":"nt/i3ou9y","slide":34,"text":""}
+{"kind":"slide","id":"sl/a7la7s","slide":35,"title":"pFedGame: purpose and scope","textShapes":8}
+{"kind":"textbox","id":"sh/1cnatwjm","slide":35,"text":"pFedGame: purpose and scope","textPreview":"pFedGame: purpose and scope","textChars":27,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/e9wryhkb","slide":35,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/fa5srm1w","slide":35,"text":"35","textPreview":"35","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/ofy94b2d","slide":35,"bbox":[98,184,10,10]}
+{"kind":"textbox","id":"sh/pg7axgjy","slide":35,"text":"Setting","textPreview":"Setting","textChars":7,"textLines":1,"bbox":[126,176,1012,28]}
+{"kind":"textbox","id":"sh/2dwr21k7","slide":35,"text":"Decentralized FL under dynamic topology. Nodes exchange models directly with immediate neighbors, without a central server.","textPreview":"Decentralized FL under dynamic topology. Nodes exchange models directly with immediate neighbors, without a central server.","textChars":123,"textLines":1,"bbox":[126,210,1012,64]}
+{"kind":"shape","id":"sh/ne5sv61s","slide":35,"bbox":[98,347,10,10]}
+{"kind":"textbox","id":"sh/cjy98b29","slide":35,"text":"Goal","textPreview":"Goal","textChars":4,"textLines":1,"bbox":[126,339,1012,28]}
+{"kind":"textbox","id":"sh/x47a1gju","slide":35,"text":"Improve a node's local model by selecting useful peers and choosing a weight between its own model and peer aggregate.","textPreview":"Improve a node's local model by selecting useful peers and choosing a weight between its own model and peer aggregate.","textChars":118,"textLines":1,"bbox":[126,373,1012,64]}
+{"kind":"shape","id":"sh/t8nmxcz6","slide":35,"bbox":[98,510,10,10]}
+{"kind":"textbox","id":"sh/87u5o7il","slide":35,"text":"Important scope","textPreview":"Important scope","textChars":15,"textLines":1,"bbox":[126,502,1012,28]}
+{"kind":"textbox","id":"sh/76l4v2h0","slide":35,"text":"The paper does not model a malicious attacker. It is relevant as a DFL game-theoretic aggregation paper, not an adversarial poisoning-defense game.","textPreview":"The paper does not model a malicious attacker. It is relevant as a DFL game-theoretic aggregation paper, not an adversarial poisoning-def...","textChars":147,"textLines":1,"bbox":[126,536,1012,58]}
+{"kind":"notes","id":"nt/a7la7s","slide":35,"text":"Behera and Chakraborty, pFedGame - Decentralized Federated Learning using Game Theory in Dynamic Topology, arXiv:2410.04058, Abstract and Secs. I-III."}
+{"kind":"slide","id":"sl/j7d0os","slide":36,"title":"pFedGame: peer selection","textShapes":9}
+{"kind":"textbox","id":"sh/50vup4za","slide":36,"text":"pFedGame: peer selection","textPreview":"pFedGame: peer selection","textChars":24,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/ixkve9gj","slide":36,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/3ytcneh4","slide":36,"text":"36","textPreview":"36","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/gv2dczyd","slide":36,"text":"A node x selects neighbor c when the local validation accuracy of c's model meets a threshold θ.","textPreview":"A node x selects neighbor c when the local validation accuracy of c's model meets a threshold θ.","textChars":96,"textLines":1,"bbox":[74,148,1110,44]}
+{"kind":"textbox","id":"sh/hwbul4zy","slide":36,"text":"CANDIDATE SET C(X)","textPreview":"CANDIDATE SET C(X)","textChars":18,"textLines":1,"bbox":[96,255,330,20]}
+{"kind":"textbox","id":"sh/utkvapgn","slide":36,"text":"Immediate neighbors connected to x in the current dynamic graph.","textPreview":"Immediate neighbors connected to x in the current dynamic graph.","textChars":64,"textLines":1,"bbox":[96,282,330,58]}
+{"kind":"textbox","id":"sh/vutcjuhs","slide":36,"text":"SELECTION TEST","textPreview":"SELECTION TEST","textChars":14,"textLines":1,"bbox":[475,255,330,20]}
+{"kind":"textbox","id":"sh/87id8zih","slide":36,"text":"H(M(c), D(x)) ≥ θ: evaluate peer c's model M(c) on x's local data D(x).","textPreview":"H(M(c), D(x)) ≥ θ: evaluate peer c's model M(c) on x's local data D(x).","textChars":71,"textLines":1,"bbox":[475,282,330,58]}
+{"kind":"textbox","id":"sh/t8ruhkz2","slide":36,"text":"RESULT","textPreview":"RESULT","textChars":6,"textLines":1,"bbox":[854,255,330,20]}
+{"kind":"textbox","id":"sh/xcrm5czi","slide":36,"text":"Aggregate only models from selected peers, then compare this peer aggregate with x's own model.","textPreview":"Aggregate only models from selected peers, then compare this peer aggregate with x's own model.","textChars":95,"textLines":1,"bbox":[854,282,330,58]}
+{"kind":"notes","id":"nt/j7d0os","slide":36,"text":"Behera and Chakraborty (2024), Sec. III-A, Eq. 1. H is an accuracy function, M(c) is peer c's model, and D(x) is node x's data."}
+{"kind":"slide","id":"sl/2hhxnw","slide":37,"title":"pFedGame: two-player aggregation game","textShapes":8}
+{"kind":"textbox","id":"sh/1o7i1ov2","slide":37,"text":"pFedGame: two-player aggregation game","textPreview":"pFedGame: two-player aggregation game","textChars":37,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/elwzqtcb","slide":37,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/fm50zedw","slide":37,"text":"37","textPreview":"37","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/sjehoju5","slide":37,"bbox":[98,183,10,10]}
+{"kind":"textbox","id":"sh/tknixovq","slide":37,"text":"Players","textPreview":"Players","textChars":7,"textLines":1,"bbox":[126,175,1012,28]}
+{"kind":"textbox","id":"sh/6hwzm9cf","slide":37,"text":"Player 1 is the node's own model M(x); player 2 is the aggregate M(α) of selected peer models.","textPreview":"Player 1 is the node's own model M(x); player 2 is the aggregate M(α) of selected peer models.","textChars":94,"textLines":1,"bbox":[126,209,1012,62]}
+{"kind":"shape","id":"sh/ri50vedk","slide":37,"bbox":[98,345,10,10]}
+{"kind":"textbox","id":"sh/cfyh03up","slide":37,"text":"Actions","textPreview":"Actions","textChars":7,"textLines":1,"bbox":[126,337,1012,28]}
+{"kind":"textbox","id":"sh/xgri98va","slide":37,"text":"Choose weights ψ(x) and ψ(α) subject to ψ(x) + ψ(α) = 1 in a convex combination of the two models.","textPreview":"Choose weights ψ(x) and ψ(α) subject to ψ(x) + ψ(α) = 1 in a convex combination of the two models.","textChars":98,"textLines":1,"bbox":[126,371,1012,62]}
+{"kind":"shape","id":"sh/x07yl43a","slide":37,"bbox":[98,507,10,10]}
+{"kind":"textbox","id":"sh/wzexsjmp","slide":37,"text":"Payoff","textPreview":"Payoff","textChars":6,"textLines":1,"bbox":[126,499,1012,28]}
+{"kind":"textbox","id":"sh/by5gzel4","slide":37,"text":"Maximize the accuracy of the weighted combined model on node x's local data. The paper calls this a two-player constant-sum cooperative game.","textPreview":"Maximize the accuracy of the weighted combined model on node x's local data. The paper calls this a two-player constant-sum cooperative g...","textChars":141,"textLines":1,"bbox":[126,533,1012,60]}
+{"kind":"notes","id":"nt/2hhxnw","slide":37,"text":"Behera and Chakraborty (2024), Sec. III-B, Eqs. 3-4. The paper's stated terminology is 'two player constant sum cooperative game.'"}
+{"kind":"slide","id":"sl/3rbfk7","slide":38,"title":"pFedGame: weight-search procedure","textShapes":8}
+{"kind":"textbox","id":"sh/ri18vqlw","slide":38,"text":"pFedGame: weight-search procedure","textPreview":"pFedGame: weight-search procedure","textChars":33,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/cjapovmh","slide":38,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/dkjqx032","slide":38,"text":"38","textPreview":"38","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/elc7q5k7","slide":38,"bbox":[98,182,10,10]}
+{"kind":"textbox","id":"sh/zml8jals","slide":38,"text":"Initialize","textPreview":"Initialize","textChars":10,"textLines":1,"bbox":[126,174,1012,28]}
+{"kind":"textbox","id":"sh/0nupsf2d","slide":38,"text":"Start with ψ(x)=0 and ψ(α)=1, meaning the peer aggregate initially has full weight.","textPreview":"Start with ψ(x)=0 and ψ(α)=1, meaning the peer aggregate initially has full weight.","textChars":83,"textLines":1,"bbox":[126,208,1012,58]}
+{"kind":"shape","id":"sh/1o3qlk3y","slide":38,"bbox":[98,340,10,10]}
+{"kind":"textbox","id":"sh/mpc7upkj","slide":38,"text":"Perturb and test","textPreview":"Perturb and test","textChars":16,"textLines":1,"bbox":[126,332,1012,28]}
+{"kind":"textbox","id":"sh/nql8nal4","slide":38,"text":"Increase ψ(x) by δ and decrease ψ(α) by δ. Evaluate the changed combination for r game rounds on local data.","textPreview":"Increase ψ(x) by δ and decrease ψ(α) by δ. Evaluate the changed combination for r game rounds on local data.","textChars":108,"textLines":1,"bbox":[126,366,1012,64]}
+{"kind":"shape","id":"sh/vutovidk","slide":38,"bbox":[98,504,10,10]}
+{"kind":"textbox","id":"sh/utk7mdwz","slide":38,"text":"Accept when useful","textPreview":"Accept when useful","textChars":18,"textLines":1,"bbox":[126,496,1012,28]}
+{"kind":"textbox","id":"sh/hgv6xsva","slide":38,"text":"Keep the new weights only if local accuracy improves by more than β. The paper gives time complexity O(|C(x)|)+O(r).","textPreview":"Keep the new weights only if local accuracy improves by more than β. The paper gives time complexity O(|C(x)|)+O(r).","textChars":116,"textLines":1,"bbox":[126,530,1012,60]}
+{"kind":"notes","id":"nt/3rbfk7","slide":38,"text":"Behera and Chakraborty (2024), Algorithm 1 and Sec. III-C. Parameters delta, beta, and r control the local weight search."}
+{"kind":"slide","id":"sl/t0mtdo","slide":39,"title":"pFedGame: results and lesson for DFL","textShapes":8}
+{"kind":"textbox","id":"sh/ido7ihg3","slide":39,"text":"pFedGame: results and lesson for DFL","textPreview":"pFedGame: results and lesson for DFL","textChars":36,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/50zqtcze","slide":39,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/kfqpk7y9","slide":39,"text":"39","textPreview":"39","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/bax8n2hc","slide":39,"bbox":[98,182,10,10]}
+{"kind":"textbox","id":"sh/a9o7exgr","slide":39,"text":"Evaluation","textPreview":"Evaluation","textChars":10,"textLines":1,"bbox":[126,174,1012,28]}
+{"kind":"textbox","id":"sh/xcfqpczi","slide":39,"text":"Fashion-MNIST, CIFAR-10, and CIFAR-100 under extreme, severe, and homogeneous data heterogeneity, compared with pFedGraph.","textPreview":"Fashion-MNIST, CIFAR-10, and CIFAR-100 under extreme, severe, and homogeneous data heterogeneity, compared with pFedGraph.","textChars":122,"textLines":1,"bbox":[126,208,1012,62]}
+{"kind":"shape","id":"sh/wb6pg7yx","slide":39,"bbox":[98,344,10,10]}
+{"kind":"textbox","id":"sh/f6h8z6hw","slide":39,"text":"Reported pattern","textPreview":"Reported pattern","textChars":16,"textLines":1,"bbox":[126,336,1012,28]}
+{"kind":"textbox","id":"sh/u587q1gb","slide":39,"text":"It performs comparably in some heterogeneous settings but has lower reported average accuracy than pFedGraph on CIFAR-10 and CIFAR-100 in the paper's summary table.","textPreview":"It performs comparably in some heterogeneous settings but has lower reported average accuracy than pFedGraph on CIFAR-10 and CIFAR-100 in...","textChars":164,"textLines":1,"bbox":[126,370,1012,70]}
+{"kind":"shape","id":"sh/836t4b6p","slide":39,"bbox":[98,513,10,10]}
+{"kind":"textbox","id":"sh/94faxgna","slide":39,"text":"Lesson","textPreview":"Lesson","textChars":6,"textLines":1,"bbox":[126,505,1012,28]}
+{"kind":"textbox","id":"sh/m1ob21oz","slide":39,"text":"DFL can use game vocabulary to formalize a local aggregation trade-off. This differs from modeling attacker and defender incentives under poisoning.","textPreview":"DFL can use game vocabulary to formalize a local aggregation trade-off. This differs from modeling attacker and defender incentives under...","textChars":148,"textLines":1,"bbox":[126,539,1012,54]}
+{"kind":"notes","id":"nt/t0mtdo","slide":39,"text":"Behera and Chakraborty (2024), Sec. IV and Tables II-III. The interpretation distinguishes pFedGame's aggregation objective from adversarial attack-defense games."}
+{"kind":"slide","id":"sl/hxq8lb","slide":40,"title":"Case study 5: FORCE (Dong et al., 2026)","textShapes":4}
+{"kind":"textbox","id":"sh/zalc3qpc","slide":40,"text":"Case study 5: FORCE (Dong et al., 2026)","textPreview":"Case study 5: FORCE (Dong et al., 2026)","textChars":39,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/0butwvqx","slide":40,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/lc3u507i","slide":40,"text":"40","textPreview":"40","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/mdcby583","slide":40,"bbox":[74,175,9,330]}
+{"kind":"textbox","id":"sh/nelc7apo","slide":40,"text":"Shapley-inspired contribution aggregation for Byzantine-resilient DFL","textPreview":"Shapley-inspired contribution aggregation for Byzantine-resilient DFL","textChars":69,"textLines":1,"bbox":[116,210,900,160]}
+{"kind":"textbox","id":"sh/8fut0fq9","slide":40,"text":"Paper-by-paper explanation: problem, model, solution, evidence, and interpretation","textPreview":"Paper-by-paper explanation: problem, model, solution, evidence, and interpretation","textChars":82,"textLines":1,"bbox":[118,434,850,34]}
+{"kind":"notes","id":"nt/hxq8lb","slide":40,"text":""}
+{"kind":"slide","id":"sl/j20wg1","slide":41,"title":"FORCE: motivation and system setting","textShapes":8}
+{"kind":"textbox","id":"sh/943qx0ja","slide":41,"text":"FORCE: motivation and system setting","textPreview":"FORCE: motivation and system setting","textChars":36,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/m1c7mlkz","slide":41,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/72l8vq14","slide":41,"text":"41","textPreview":"41","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/kzapkb2t","slide":41,"bbox":[98,184,10,10]}
+{"kind":"textbox","id":"sh/l03qtgje","slide":41,"text":"Setting","textPreview":"Setting","textChars":7,"textLines":1,"bbox":[126,176,1012,28]}
+{"kind":"textbox","id":"sh/yds7ilkn","slide":41,"text":"Decentralized FL lets clients exchange models without a server. Each node may also act as a local aggregator.","textPreview":"Decentralized FL lets clients exchange models without a server. Each node may also act as a local aggregator.","textChars":109,"textLines":1,"bbox":[126,210,1012,60]}
+{"kind":"shape","id":"sh/ze18r618","slide":41,"bbox":[98,344,10,10]}
+{"kind":"textbox","id":"sh/cbapgb2h","slide":41,"text":"Threat","textPreview":"Threat","textChars":6,"textLines":1,"bbox":[126,336,1012,28]}
+{"kind":"textbox","id":"sh/xcjqpgj2","slide":41,"text":"Byzantine clients can send arbitrary or adaptive malicious updates. The paper argues that gradient-checking defenses can be manipulated.","textPreview":"Byzantine clients can send arbitrary or adaptive malicious updates. The paper argues that gradient-checking defenses can be manipulated.","textChars":136,"textLines":1,"bbox":[126,370,1012,62]}
+{"kind":"shape","id":"sh/po32xo7q","slide":41,"bbox":[98,508,10,10]}
+{"kind":"textbox","id":"sh/onu14j65","slide":41,"text":"Goal","textPreview":"Goal","textChars":4,"textLines":1,"bbox":[126,500,1012,28]}
+{"kind":"textbox","id":"sh/3mlkvepk","slide":41,"text":"Identify potentially malicious neighbors using a universal contribution measure based on local-model loss rather than a particular gradient pattern.","textPreview":"Identify potentially malicious neighbors using a universal contribution measure based on local-model loss rather than a particular gradie...","textChars":148,"textLines":1,"bbox":[126,534,1012,58]}
+{"kind":"notes","id":"nt/j20wg1","slide":41,"text":"Dong et al., FORCE: Byzantine-Resilient Decentralized Federated Learning via Game-Theoretic Contribution Aggregation, IEEE TIFS 21 (2026), DOI:10.1109/TIFS.2026.3674690. Public abstract and publication metadata."}
+{"kind":"slide","id":"sl/tcullh","slide":42,"title":"FORCE: the Shapley-value intuition","textShapes":8}
+{"kind":"textbox","id":"sh/qpc3ipsr","slide":42,"text":"FORCE: the Shapley-value intuition","textPreview":"FORCE: the Shapley-value intuition","textChars":34,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/ds32d4ri","slide":42,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/srulkzax","slide":42,"text":"42","textPreview":"42","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/felkfe98","slide":42,"text":"For a set of contributors, the Shapley value assigns each contributor its average marginal contribution across possible coalition orders.","textPreview":"For a set of contributors, the Shapley value assigns each contributor its average marginal contribution across possible coalition orders.","textChars":137,"textLines":1,"bbox":[74,148,1110,50]}
+{"kind":"shape","id":"sh/edc3m9sn","slide":42,"bbox":[100,292,10,10]}
+{"kind":"textbox","id":"sh/1gnmh4re","slide":42,"text":"Coalition value","textPreview":"Coalition value","textChars":15,"textLines":1,"bbox":[128,284,472,28]}
+{"kind":"textbox","id":"sh/0felojat","slide":42,"text":"Define how good an aggregate is. A contributor gains value when its addition improves that coalition outcome.","textPreview":"Define how good an aggregate is. A contributor gains value when its addition improves that coalition outcome.","textChars":109,"textLines":1,"bbox":[128,318,472,70]}
+{"kind":"shape","id":"sh/ni54je9k","slide":42,"bbox":[650,292,10,10]}
+{"kind":"textbox","id":"sh/2hw3q98z","slide":42,"text":"Fair averaging","textPreview":"Fair averaging","textChars":14,"textLines":1,"bbox":[678,284,472,28]}
+{"kind":"textbox","id":"sh/cj6horq1","slide":42,"text":"Average marginal contribution over different subsets and orders to avoid crediting only one arbitrary arrival order.","textPreview":"Average marginal contribution over different subsets and orders to avoid crediting only one arbitrary arrival order.","textChars":116,"textLines":1,"bbox":[678,318,472,70]}
+{"kind":"textbox","id":"sh/xkfihw7m","slide":42,"text":"In FORCE, the published abstract says the contribution signal comes from local-model loss and helps identify potentially malicious clients.","textPreview":"In FORCE, the published abstract says the contribution signal comes from local-model loss and helps identify potentially malicious clients.","textChars":139,"textLines":1,"bbox":[114,512,1050,42]}
+{"kind":"notes","id":"nt/tcullh","slide":42,"text":"General Shapley-value intuition. FORCE-specific claim derives from Dong et al. (2026) public abstract, DOI:10.1109/TIFS.2026.3674690."}
+{"kind":"slide","id":"sl/6dg8w3","slide":43,"title":"FORCE: published method description","textShapes":8}
+{"kind":"textbox","id":"sh/jy50raxc","slide":43,"text":"FORCE: published method description","textPreview":"FORCE: published method description","textChars":35,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/4zehkfex","slide":43,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/50nitkf2","slide":43,"text":"43","textPreview":"43","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/61wzmpwn","slide":43,"bbox":[98,186,10,10]}
+{"kind":"textbox","id":"sh/r2p0vax8","slide":43,"text":"Contribution signal","textPreview":"Contribution signal","textChars":19,"textLines":1,"bbox":[126,178,1012,28]}
+{"kind":"textbox","id":"sh/snyhofet","slide":43,"text":"FORCE draws inspiration from Shapley value and evaluates a local-model loss independent of specific gradients.","textPreview":"FORCE draws inspiration from Shapley value and evaluates a local-model loss independent of specific gradients.","textChars":110,"textLines":1,"bbox":[126,212,1012,62]}
+{"kind":"shape","id":"sh/to7ixkfe","slide":43,"bbox":[98,348,10,10]}
+{"kind":"textbox","id":"sh/epgzqpwz","slide":43,"text":"Aggregation use","textPreview":"Aggregation use","textChars":15,"textLines":1,"bbox":[126,340,1012,28]}
+{"kind":"textbox","id":"sh/fqp0zuxk","slide":43,"text":"This contribution evaluation supports identification of potentially malicious clients before or during local aggregation.","textPreview":"This contribution evaluation supports identification of potentially malicious clients before or during local aggregation.","textChars":121,"textLines":1,"bbox":[126,374,1012,62]}
+{"kind":"shape","id":"sh/b2p4jy1w","slide":43,"bbox":[98,510,10,10]}
+{"kind":"textbox","id":"sh/q1gnqtkb","slide":43,"text":"Game-theory role","textPreview":"Game-theory role","textChars":16,"textLines":1,"bbox":[126,502,1012,28]}
+{"kind":"textbox","id":"sh/d4rml8jm","slide":43,"text":"The game-theory component is contribution valuation, rather than a reported Nash, minimax, or Stackelberg attacker-defender equilibrium.","textPreview":"The game-theory component is contribution valuation, rather than a reported Nash, minimax, or Stackelberg attacker-defender equilibrium.","textChars":136,"textLines":1,"bbox":[126,536,1012,58]}
+{"kind":"notes","id":"nt/6dg8w3","slide":43,"text":"Dong et al. (2026), public abstract via IEEE-linked publication record. This slide limits claims to the published abstract description; it does not infer undisclosed algorithmic details."}
+{"kind":"slide","id":"sl/z13j9n","slide":44,"title":"FORCE-: scalability through approximation","textShapes":8}
+{"kind":"textbox","id":"sh/z2x4z6tk","slide":44,"text":"FORCE-: scalability through approximation","textPreview":"FORCE-: scalability through approximation","textChars":41,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/03ql8ba5","slide":44,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/14zm1gbq","slide":44,"text":"44","textPreview":"44","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/m583alsb","slide":44,"bbox":[98,190,10,10]}
+{"kind":"textbox","id":"sh/n6h43qtw","slide":44,"text":"Cost problem","textPreview":"Cost problem","textChars":12,"textLines":1,"bbox":[126,182,1012,28]}
+{"kind":"textbox","id":"sh/o7qlcvah","slide":44,"text":"Exact Shapley-style calculations can grow expensive as a node has more neighboring clients.","textPreview":"Exact Shapley-style calculations can grow expensive as a node has more neighboring clients.","textChars":91,"textLines":1,"bbox":[126,216,1012,60]}
+{"kind":"shape","id":"sh/98zm50b2","slide":44,"bbox":[98,352,10,10]}
+{"kind":"textbox","id":"sh/2943y1c7","slide":44,"text":"FORCE-","textPreview":"FORCE-","textChars":6,"textLines":1,"bbox":[126,344,1012,28]}
+{"kind":"textbox","id":"sh/3adkrmts","slide":44,"text":"The paper introduces FORCE-, described as a computation-lightweight variant that approximates Shapley-value computation.","textPreview":"The paper introduces FORCE-, described as a computation-lightweight variant that approximates Shapley-value computation.","textChars":120,"textLines":1,"bbox":[126,378,1012,62]}
+{"kind":"shape","id":"sh/jipkbu5w","slide":44,"bbox":[98,514,10,10]}
+{"kind":"textbox","id":"sh/yhg3ip4r","slide":44,"text":"Deployment implication","textPreview":"Deployment implication","textChars":22,"textLines":1,"bbox":[126,506,1012,28]}
+{"kind":"textbox","id":"sh/l472d432","slide":44,"text":"Approximation matters in DFL because local aggregators can have limited compute resources and decentralized neighbor counts vary.","textPreview":"Approximation matters in DFL because local aggregators can have limited compute resources and decentralized neighbor counts vary.","textChars":129,"textLines":1,"bbox":[126,540,1012,56]}
+{"kind":"notes","id":"nt/z13j9n","slide":44,"text":"Dong et al. (2026), public abstract. The abstract explicitly states that FORCE- approximates Shapley computation to lower overhead as neighboring clients scale."}
+{"kind":"slide","id":"sl/tprx14","slide":45,"title":"FORCE: evidence boundary and relevance","textShapes":8}
+{"kind":"textbox","id":"sh/ne5gr218","slide":45,"text":"FORCE: evidence boundary and relevance","textPreview":"FORCE: evidence boundary and relevance","textChars":38,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/ofeh07it","slide":45,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/9g7itcje","slide":45,"text":"45","textPreview":"45","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/e9wzuxkr","slide":45,"bbox":[98,182,10,10]}
+{"kind":"textbox","id":"sh/za5gni1c","slide":45,"text":"Reported evaluation","textPreview":"Reported evaluation","textChars":19,"textLines":1,"bbox":[126,174,1012,28]}
+{"kind":"textbox","id":"sh/0behwn2h","slide":45,"text":"The public abstract reports four datasets and three attack settings, with FORCE outperforming compared Byzantine-resilient DFL aggregation methods.","textPreview":"The public abstract reports four datasets and three attack settings, with FORCE outperforming compared Byzantine-resilient DFL aggregatio...","textChars":147,"textLines":1,"bbox":[126,208,1012,64]}
+{"kind":"shape","id":"sh/1cnypsj2","slide":45,"bbox":[98,348,10,10]}
+{"kind":"textbox","id":"sh/y5gz6h0v","slide":45,"text":"Evidence boundary","textPreview":"Evidence boundary","textChars":17,"textLines":1,"bbox":[126,340,1012,28]}
+{"kind":"textbox","id":"sh/j6p0zm1g","slide":45,"text":"The accessible source for this review provides abstract-level method details. Exact scoring equation, approximation procedure, and experimental protocol require the full article before reproducing results.","textPreview":"The accessible source for this review provides abstract-level method details. Exact scoring equation, approximation procedure, and experi...","textChars":205,"textLines":1,"bbox":[126,374,1012,74]}
+{"kind":"shape","id":"sh/jm90jut4","slide":45,"bbox":[98,522,10,10]}
+{"kind":"textbox","id":"sh/yl0jqpsj","slide":45,"text":"Relevance","textPreview":"Relevance","textChars":9,"textLines":1,"bbox":[126,514,1012,28]}
+{"kind":"textbox","id":"sh/loril4ba","slide":45,"text":"FORCE is the closest reviewed paper to DFL plus poisoning resilience, but its game-theory mechanism is contribution aggregation rather than strategic attacker-defender equilibrium.","textPreview":"FORCE is the closest reviewed paper to DFL plus poisoning resilience, but its game-theory mechanism is contribution aggregation rather th...","textChars":180,"textLines":1,"bbox":[126,548,1012,56]}
+{"kind":"notes","id":"nt/tprx14","slide":45,"text":"Dong et al. (2026), public abstract and bibliographic record. The boundary is stated explicitly to prevent unsupported reconstruction of the closed full text."}
+{"kind":"slide","id":"sl/redbal","slide":46,"title":"Cross-paper comparison","textShapes":2}
+{"kind":"textbox","id":"sh/83m9c7mp","slide":46,"text":"Cross-paper comparison","textPreview":"Cross-paper comparison","textChars":22,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/72dsj2l4","slide":46,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/m14rax4j","slide":46,"text":"46","textPreview":"46","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"table","id":"tb/kfe143ax","slide":46,"name":"","rows":6,"cols":4,"preview":"Paper | Players / choices | Solution | Main metric focus","bbox":[64,144,1152,478]}
+{"kind":"notes","id":"nt/redbal","slide":46,"text":"Synthesis based on the methods described in the cited papers. FORCE details remain restricted to public abstract-level evidence."}
+{"kind":"slide","id":"sl/voowzq","slide":47,"title":"What changes across the papers","textShapes":8}
+{"kind":"textbox","id":"sh/y5knylgz","slide":47,"text":"What changes across the papers","textPreview":"What changes across the papers","textChars":30,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/l8bmtgzq","slide":47,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/k7250by5","slide":47,"text":"47","textPreview":"47","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/bi94n6h8","slide":47,"bbox":[98,188,10,10]}
+{"kind":"textbox","id":"sh/ah0nu103","slide":47,"text":"Who acts","textPreview":"Who acts","textChars":8,"textLines":1,"bbox":[126,180,1012,28]}
+{"kind":"textbox","id":"sh/x4rmpgze","slide":47,"text":"Some papers model an explicit attacker and defender. Others use game theory to value contributions or choose aggregation weights.","textPreview":"Some papers model an explicit attacker and defender. Others use game theory to value contributions or choose aggregation weights.","textChars":129,"textLines":1,"bbox":[126,214,1012,62]}
+{"kind":"shape","id":"sh/cji5wbyt","slide":47,"bbox":[98,349,10,10]}
+{"kind":"textbox","id":"sh/ne94jmhc","slide":47,"text":"What is uncertain","textPreview":"What is uncertain","textChars":17,"textLines":1,"bbox":[126,341,1012,28]}
+{"kind":"textbox","id":"sh/2d03q10r","slide":47,"text":"From no hidden type in a compact Nash model to unknown attack types and multi-round evidence in Meta Stackelberg.","textPreview":"From no hidden type in a compact Nash model to unknown attack types and multi-round evidence in Meta Stackelberg.","textChars":113,"textLines":1,"bbox":[126,375,1012,62]}
+{"kind":"shape","id":"sh/wb2x4nyp","slide":47,"bbox":[98,510,10,10]}
+{"kind":"textbox","id":"sh/xcbedsfa","slide":47,"text":"What counts as a solution","textPreview":"What counts as a solution","textChars":25,"textLines":1,"bbox":[126,502,1012,28]}
+{"kind":"textbox","id":"sh/a9kf2xgz","slide":47,"text":"Equilibrium analysis, minimax optimization, policy learning, and Shapley-inspired scoring answer distinct research questions.","textPreview":"Equilibrium analysis, minimax optimization, policy learning, and Shapley-inspired scoring answer distinct research questions.","textChars":125,"textLines":1,"bbox":[126,536,1012,56]}
+{"kind":"notes","id":"nt/voowzq","slide":47,"text":"Synthesis based on the reviewed papers. It avoids treating all uses of game theory in FL and DFL as the same modeling approach."}
+{"kind":"slide","id":"sl/lzcs0s","slide":48,"title":"Reading checklist for a game-theoretic FL paper","textShapes":10}
+{"kind":"textbox","id":"sh/9knadwfm","slide":48,"text":"Reading checklist for a game-theoretic FL paper","textPreview":"Reading checklist for a game-theoretic FL paper","textChars":47,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/mhwrihgb","slide":48,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/ni5sbmxw","slide":48,"text":"48","textPreview":"48","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/0fe9g7y5","slide":48,"bbox":[98,168,10,10]}
+{"kind":"textbox","id":"sh/lgna9cfq","slide":48,"text":"1. Identify the players and action sets","textPreview":"1. Identify the players and action sets","textChars":39,"textLines":1,"bbox":[126,160,1012,28]}
+{"kind":"textbox","id":"sh/ytwrexgz","slide":48,"text":"Do the paper's real decision variables correspond to the claimed players?","textPreview":"Do the paper's real decision variables correspond to the claimed players?","textChars":73,"textLines":1,"bbox":[126,194,1012,48]}
+{"kind":"shape","id":"sh/zu5s72xk","slide":48,"bbox":[98,280,10,10]}
+{"kind":"textbox","id":"sh/cru9c7y9","slide":48,"text":"2. Inspect information and timing","textPreview":"2. Inspect information and timing","textChars":33,"textLines":1,"bbox":[126,272,1012,28]}
+{"kind":"textbox","id":"sh/ds3q5cfe","slide":48,"text":"Which variables are hidden, and do simultaneous or leader-follower moves reflect the system?","textPreview":"Which variables are hidden, and do simultaneous or leader-follower moves reflect the system?","textChars":92,"textLines":1,"bbox":[126,306,1012,48]}
+{"kind":"shape","id":"sh/l47y1g3m","slide":48,"bbox":[98,392,10,10]}
+{"kind":"textbox","id":"sh/k3yx8bmh","slide":48,"text":"3. Read the utility or objective","textPreview":"3. Read the utility or objective","textChars":32,"textLines":1,"bbox":[126,384,1012,28]}
+{"kind":"textbox","id":"sh/j2pgz6lw","slide":48,"text":"Which trade-offs are rewarded or penalized? Are clean utility and attack damage both measured?","textPreview":"Which trade-offs are rewarded or penalized? Are clean utility and attack damage both measured?","textChars":94,"textLines":1,"bbox":[126,418,1012,48]}
+{"kind":"shape","id":"sh/y1wf614b","slide":48,"bbox":[98,504,10,10]}
+{"kind":"textbox","id":"sh/x0nyxw3q","slide":48,"text":"4. Separate theory from implementation","textPreview":"4. Separate theory from implementation","textChars":38,"textLines":1,"bbox":[126,496,1012,28]}
+{"kind":"textbox","id":"sh/wfex4rm5","slide":48,"text":"Does the operational algorithm actually approximate the stated equilibrium or optimization problem?","textPreview":"Does the operational algorithm actually approximate the stated equilibrium or optimization problem?","textChars":99,"textLines":1,"bbox":[126,530,1012,48]}
+{"kind":"notes","id":"nt/lzcs0s","slide":48,"text":"Methodological checklist synthesized for literature review. It is used to compare the case studies in this deck."}
+{"kind":"slide","id":"sl/4qgvmw","slide":49,"title":"Key takeaways","textShapes":8}
+{"kind":"textbox","id":"sh/szetsbal","slide":49,"text":"Key takeaways","textPreview":"Key takeaways","textChars":13,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/ry5cz6t0","slide":49,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/qxwb61sv","slide":49,"text":"49","textPreview":"49","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/1o7u50bi","slide":49,"bbox":[98,183,10,10]}
+{"kind":"textbox","id":"sh/0nydwvax","slide":49,"text":"Game theory supplies a modeling language","textPreview":"Game theory supplies a modeling language","textChars":40,"textLines":1,"bbox":[126,175,1012,28]}
+{"kind":"textbox","id":"sh/fmpc3qtc","slide":49,"text":"Players, actions, utilities, information, timing, and solution concepts make strategic assumptions inspectable.","textPreview":"Players, actions, utilities, information, timing, and solution concepts make strategic assumptions inspectable.","textChars":111,"textLines":1,"bbox":[126,209,1012,62]}
+{"kind":"shape","id":"sh/elgbulsr","slide":49,"bbox":[98,345,10,10]}
+{"kind":"textbox","id":"sh/hs3utwby","slide":49,"text":"Adaptive attacks motivate dynamic models","textPreview":"Adaptive attacks motivate dynamic models","textChars":40,"textLines":1,"bbox":[126,337,1012,28]}
+{"kind":"textbox","id":"sh/grut0rud","slide":49,"text":"FedGame and Meta Stackelberg explicitly account for the attacker changing behavior in response to defense.","textPreview":"FedGame and Meta Stackelberg explicitly account for the attacker changing behavior in response to defense.","textChars":106,"textLines":1,"bbox":[126,371,1012,62]}
+{"kind":"shape","id":"sh/6pgzq1cf","slide":49,"bbox":[98,507,10,10]}
+{"kind":"textbox","id":"sh/7qpgj6t0","slide":49,"text":"DFL uses game theory in more than one way","textPreview":"DFL uses game theory in more than one way","textChars":41,"textLines":1,"bbox":[126,499,1012,28]}
+{"kind":"textbox","id":"sh/sryhsbal","slide":49,"text":"pFedGame and FORCE show aggregation and contribution formulations; they should not be presented as identical to an attacker-defender strategic game.","textPreview":"pFedGame and FORCE show aggregation and contribution formulations; they should not be presented as identical to an attacker-defender stra...","textChars":148,"textLines":1,"bbox":[126,533,1012,60]}
+{"kind":"notes","id":"nt/4qgvmw","slide":49,"text":"Synthesis of the reviewed literature. This literature review intentionally does not select a final thesis formulation."}
+{"kind":"slide","id":"sl/zeu0h5","slide":50,"title":"Selected references","textShapes":8}
+{"kind":"textbox","id":"sh/bq98vqpg","slide":50,"text":"Selected references","textPreview":"Selected references","textChars":19,"textLines":1,"bbox":[74,46,1050,52]}
+{"kind":"shape","id":"sh/cr2povq1","slide":50,"bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/dsbqxg7m","slide":50,"text":"50","textPreview":"50","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/2107i18z","slide":50,"text":"1. Sagduyu, Erpek, and Shi. Securing NextG Systems against Poisoning Attacks on Federated Learning: A Game-Theoretic Solution. arXiv:2312.17164, 2023.","textPreview":"1. Sagduyu, Erpek, and Shi. Securing NextG Systems against Poisoning Attacks on Federated Learning: A Game-Theoretic Solution. arXiv:2312...","textChars":150,"textLines":1,"bbox":[84,150,1110,52]}
+{"kind":"textbox","id":"sh/3298r6pk","slide":50,"text":"2. Jia et al. FedGame: A Game-Theoretic Defense against Backdoor Attacks in Federated Learning. NeurIPS 2023.","textPreview":"2. Jia et al. FedGame: A Game-Theoretic Defense against Backdoor Attacks in Federated Learning. NeurIPS 2023.","textChars":109,"textLines":1,"bbox":[84,232,1110,44]}
+{"kind":"textbox","id":"sh/43ipkbq5","slide":50,"text":"3. Li et al. Meta Stackelberg Game: Robust Federated Learning against Adaptive and Mixed Poisoning Attacks. arXiv:2410.17431, 2024.","textPreview":"3. Li et al. Meta Stackelberg Game: Robust Federated Learning against Adaptive and Mixed Poisoning Attacks. arXiv:2410.17431, 2024.","textChars":131,"textLines":1,"bbox":[84,310,1110,52]}
+{"kind":"textbox","id":"sh/porqtg7q","slide":50,"text":"4. Behera and Chakraborty. pFedGame: Decentralized Federated Learning using Game Theory in Dynamic Topology. arXiv:2410.04058, 2024.","textPreview":"4. Behera and Chakraborty. pFedGame: Decentralized Federated Learning using Game Theory in Dynamic Topology. arXiv:2410.04058, 2024.","textChars":132,"textLines":1,"bbox":[84,390,1110,52]}
+{"kind":"textbox","id":"sh/mxk7u5o3","slide":50,"text":"5. Dong et al. FORCE: Byzantine-Resilient Decentralized Federated Learning via Game-Theoretic Contribution Aggregation. IEEE TIFS 21, 2026. DOI: 10.1109/TIFS.2026.3674690.","textPreview":"5. Dong et al. FORCE: Byzantine-Resilient Decentralized Federated Learning via Game-Theoretic Contribution Aggregation. IEEE TIFS 21, 202...","textChars":171,"textLines":1,"bbox":[84,470,1110,56]}
+{"kind":"textbox","id":"sh/nyd83apo","slide":50,"text":"Research notes: game_theory_research_note.md","textPreview":"Research notes: game_theory_research_note.md","textChars":44,"textLines":1,"bbox":[84,618,780,24]}
+{"kind":"notes","id":"nt/zeu0h5","slide":50,"text":"Bibliographic references. The FORCE paper is included from public bibliographic metadata and abstract; confirm full-text details before formal citation or reproduction."}

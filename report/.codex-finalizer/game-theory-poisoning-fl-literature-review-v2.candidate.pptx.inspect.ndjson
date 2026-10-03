@@ -1,0 +1,117 @@
+{"kind":"deck","id":"pr/cuc3j1","name":"Deck"}
+{"kind":"layout","layoutId":"787a8d84-6143-4223-a20f-ab522f6f631d","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"34bf0081-071b-431d-b857-0649e4e3f8d7","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/n2uadl","slide":1,"title":"Game Theory for Modeling","textShapes":4}
+{"kind":"shape","id":"sh/8z6h8v2x","slide":1,"name":"cover accent","bbox":[76,132,8,408]}
+{"kind":"textbox","id":"sh/7exgzq1s","slide":1,"text":"Game Theory for Modeling\nPoisoning Attacks in Federated Learning","textPreview":"Game Theory for Modeling | Poisoning Attacks in Federated Learning","textChars":64,"textLines":2,"bbox":[122,156,980,170]}
+{"kind":"textbox","id":"sh/mdoz6lk7","slide":1,"text":"Concepts, game families, and literature review","textPreview":"Concepts, game families, and literature review","textChars":46,"textLines":1,"bbox":[126,360,760,42]}
+{"kind":"textbox","id":"sh/lcfyx0jm","slide":1,"text":"Academic presentation","textPreview":"Academic presentation","textChars":21,"textLines":1,"bbox":[126,456,320,28]}
+{"kind":"textbox","id":"sh/kb6h4v21","slide":1,"text":"Federated Learning Security","textPreview":"Federated Learning Security","textChars":27,"textLines":1,"bbox":[126,574,420,24]}
+{"kind":"notes","id":"nt/n2uadl","slide":1,"text":"Scope: game-theory literature review for poisoning attacks in federated learning. Sources appear on the relevant research slides."}
+{"kind":"slide","id":"sl/dx655x","slide":2,"title":"Why poisoning can be modeled strategically","textShapes":9}
+{"kind":"textbox","id":"sh/u9ojyhc7","slide":2,"text":"Why poisoning can be modeled strategically","textPreview":"Why poisoning can be modeled strategically","textChars":42,"textLines":1,"bbox":[74,46,1020,52]}
+{"kind":"shape","id":"sh/hwf29cby","slide":2,"name":"title accent","bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/gv6107ud","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/76x032dw","slide":2,"text":"A poisoned update is not only an anomaly. It can be a deliberate response to the defender's expected behavior.","textPreview":"A poisoned update is not only an anomaly. It can be a deliberate response to the defender's expected behavior.","textChars":110,"textLines":1,"bbox":[74,152,1120,64]}
+{"kind":"shape","id":"sh/654juxcb","slide":2,"name":"bullet marker","bbox":[98,279,10,10]}
+{"kind":"textbox","id":"sh/t8fi5cvm","slide":2,"text":"Attacker choice","textPreview":"Attacker choice","textChars":15,"textLines":1,"bbox":[126,272,462,30]}
+{"kind":"textbox","id":"sh/8761w7uh","slide":2,"text":"The attacker can choose timing, target, intensity, or whether to mimic benign updates.","textPreview":"The attacker can choose timing, target, intensity, or whether to mimic benign updates.","textChars":86,"textLines":1,"bbox":[126,305,462,58]}
+{"kind":"shape","id":"sh/j2d0zidk","slide":2,"name":"bullet marker","bbox":[650,279,10,10]}
+{"kind":"textbox","id":"sh/y14jqxcz","slide":2,"text":"Defender choice","textPreview":"Defender choice","textChars":15,"textLines":1,"bbox":[678,272,462,30]}
+{"kind":"textbox","id":"sh/8ny1wzqh","slide":2,"text":"The defender can admit, reject, reweight, inspect, or isolate an update or client.","textPreview":"The defender can admit, reject, reweight, inspect, or isolate an update or client.","textChars":82,"textLines":1,"bbox":[678,305,462,58]}
+{"kind":"shape","id":"sh/to7i5krm","slide":2,"name":"bullet marker","bbox":[98,445,10,10]}
+{"kind":"textbox","id":"sh/6lgjup8b","slide":2,"text":"Mutual adaptation","textPreview":"Mutual adaptation","textChars":17,"textLines":1,"bbox":[126,438,1012,30]}
+{"kind":"textbox","id":"sh/7mp03u9w","slide":2,"text":"Each decision changes the other side's future incentives, costs, and expected outcomes.","textPreview":"Each decision changes the other side's future incentives, costs, and expected outcomes.","textChars":87,"textLines":1,"bbox":[126,471,1012,58]}
+{"kind":"notes","id":"nt/dx655x","slide":2,"text":"Conceptual motivation. Relevant direct strategic-defense sources: Sagduyu, Erpek, and Shi (2023), arXiv:2312.17164; Jia et al. (2023), FedGame, NeurIPS 2023."}
+{"kind":"slide","id":"sl/kfscrs","slide":3,"title":"Core vocabulary of game-theoretic modeling","textShapes":2}
+{"kind":"textbox","id":"sh/mtw76x87","slide":3,"text":"Core vocabulary of game-theoretic modeling","textPreview":"Core vocabulary of game-theoretic modeling","textChars":42,"textLines":1,"bbox":[74,46,1020,52]}
+{"kind":"shape","id":"sh/9wnqhcry","slide":3,"name":"title accent","bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/8vep87qd","slide":3,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"table","id":"tb/mpc7ahsj","slide":3,"name":"","rows":6,"cols":3,"preview":"Concept | Meaning | Poisoning example","bbox":[74,150,1130,448]}
+{"kind":"notes","id":"nt/kfscrs","slide":3,"text":"General game-theory vocabulary synthesized for the presentation. See also Sagduyu et al. (2023), arXiv:2312.17164, and Li et al. (2024), arXiv:2410.17431."}
+{"kind":"slide","id":"sl/l3hee2","slide":4,"title":"Elements of a game model","textShapes":11}
+{"kind":"textbox","id":"sh/58f61ozq","slide":4,"text":"Elements of a game model","textPreview":"Elements of a game model","textChars":24,"textLines":1,"bbox":[74,46,1020,52]}
+{"kind":"shape","id":"sh/i5o7690f","slide":4,"name":"title accent","bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/j6xozeh0","slide":4,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/w36p4zi9","slide":4,"text":"A paper must define these elements before it can claim a strategic game model.","textPreview":"A paper must define these elements before it can claim a strategic game model.","textChars":78,"textLines":1,"bbox":[74,147,1020,34]}
+{"kind":"shape","id":"sh/h4f6x4zu","slide":4,"name":"bullet marker","bbox":[100,235,10,10]}
+{"kind":"textbox","id":"sh/uho72903","slide":4,"text":"Players and action sets","textPreview":"Players and action sets","textChars":23,"textLines":1,"bbox":[128,228,452,30]}
+{"kind":"textbox","id":"sh/vixove1o","slide":4,"text":"Who makes decisions, and which actions are feasible for each player.","textPreview":"Who makes decisions, and which actions are feasible for each player.","textChars":68,"textLines":1,"bbox":[128,261,452,58]}
+{"kind":"shape","id":"sh/8fmp0zid","slide":4,"name":"bullet marker","bbox":[660,235,10,10]}
+{"kind":"textbox","id":"sh/9gv6t4ji","slide":4,"text":"Information and beliefs","textPreview":"Information and beliefs","textChars":23,"textLines":1,"bbox":[688,228,452,30]}
+{"kind":"textbox","id":"sh/dwvulkja","slide":4,"text":"Which observations are public, private, or uncertain at the time of action.","textPreview":"Which observations are public, private, or uncertain at the time of action.","textChars":75,"textLines":1,"bbox":[688,261,452,58]}
+{"kind":"shape","id":"sh/cv2tcz2p","slide":4,"name":"bullet marker","bbox":[100,411,10,10]}
+{"kind":"textbox","id":"sh/ratcju14","slide":4,"text":"Utilities and costs","textPreview":"Utilities and costs","textChars":19,"textLines":1,"bbox":[128,404,452,30]}
+{"kind":"textbox","id":"sh/q9kbapkz","slide":4,"text":"How performance, damage, effort, false positives, and overhead affect preferences.","textPreview":"How performance, damage, effort, false positives, and overhead affect preferences.","textChars":82,"textLines":1,"bbox":[128,437,452,58]}
+{"kind":"shape","id":"sh/58bahkje","slide":4,"name":"bullet marker","bbox":[660,411,10,10]}
+{"kind":"textbox","id":"sh/472t8f2t","slide":4,"text":"Timing and transition","textPreview":"Timing and transition","textChars":21,"textLines":1,"bbox":[688,404,452,30]}
+{"kind":"textbox","id":"sh/36tsfa18","slide":4,"text":"Whether choices are simultaneous or sequential, and how one round changes the next state.","textPreview":"Whether choices are simultaneous or sequential, and how one round changes the next state.","textChars":89,"textLines":1,"bbox":[688,437,452,58]}
+{"kind":"notes","id":"nt/l3hee2","slide":4,"text":"Conceptual framework for reading the papers. A game model must make entities, actions, information, payoffs, and timing explicit."}
+{"kind":"slide","id":"sl/07wbni","slide":5,"title":"Equilibrium and solution concepts","textShapes":9}
+{"kind":"textbox","id":"sh/tcnux4n2","slide":5,"text":"Equilibrium and solution concepts","textPreview":"Equilibrium and solution concepts","textChars":33,"textLines":1,"bbox":[74,46,1020,52]}
+{"kind":"shape","id":"sh/69cvmpob","slide":5,"name":"title accent","bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/7alcvu5w","slide":5,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/gzedsz6t","slide":5,"text":"An equilibrium predicts stable behavior within stated assumptions. It does not guarantee safety in every real system.","textPreview":"An equilibrium predicts stable behavior within stated assumptions. It does not guarantee safety in every real system.","textChars":117,"textLines":1,"bbox":[74,148,1115,46]}
+{"kind":"shape","id":"sh/h0nu14ny","slide":5,"name":"bullet marker","bbox":[100,255,10,10]}
+{"kind":"textbox","id":"sh/udwvq9on","slide":5,"text":"Nash equilibrium","textPreview":"Nash equilibrium","textChars":16,"textLines":1,"bbox":[128,248,972,30]}
+{"kind":"textbox","id":"sh/vy5czu58","slide":5,"text":"No player improves its utility by changing strategy alone while others remain fixed.","textPreview":"No player improves its utility by changing strategy alone while others remain fixed.","textChars":84,"textLines":1,"bbox":[128,281,972,58]}
+{"kind":"shape","id":"sh/43ydwj6p","slide":5,"name":"bullet marker","bbox":[100,361,10,10]}
+{"kind":"textbox","id":"sh/547e5ona","slide":5,"text":"Bayesian Nash equilibrium","textPreview":"Bayesian Nash equilibrium","textChars":25,"textLines":1,"bbox":[128,354,972,30]}
+{"kind":"textbox","id":"sh/p83210fe","slide":5,"text":"Each player acts under beliefs about hidden types, such as benign or malicious clients.","textPreview":"Each player acts under beliefs about hidden types, such as benign or malicious clients.","textChars":87,"textLines":1,"bbox":[128,387,972,58]}
+{"kind":"shape","id":"sh/o7u18vet","slide":5,"name":"bullet marker","bbox":[100,467,10,10]}
+{"kind":"textbox","id":"sh/n61kzqx8","slide":5,"text":"Stackelberg equilibrium","textPreview":"Stackelberg equilibrium","textChars":23,"textLines":1,"bbox":[128,460,972,30]}
+{"kind":"textbox","id":"sh/25sj6lwn","slide":5,"text":"A leader commits to a strategy and a follower best-responds. The timing must be justified.","textPreview":"A leader commits to a strategy and a follower best-responds. The timing must be justified.","textChars":90,"textLines":1,"bbox":[128,493,972,58]}
+{"kind":"notes","id":"nt/07wbni","slide":5,"text":"Definitions are standard game-theory terminology. The application to FL follows Sagduyu et al. (2023) for Nash reasoning and Li et al. (2024) for Bayesian Stackelberg reasoning."}
+{"kind":"slide","id":"sl/u9u2vc","slide":6,"title":"Game families used in poisoning research","textShapes":2}
+{"kind":"textbox","id":"sh/47ql8vu9","slide":6,"text":"Game families used in poisoning research","textPreview":"Game families used in poisoning research","textChars":40,"textLines":1,"bbox":[74,46,1020,52]}
+{"kind":"shape","id":"sh/36hkzqdo","slide":6,"name":"title accent","bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/i5836lc3","slide":6,"text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"table","id":"tb/0rutw3i9","slide":6,"name":"","rows":7,"cols":3,"preview":"Game family | Key assumption | What it captures","bbox":[74,146,1130,470]}
+{"kind":"notes","id":"nt/u9u2vc","slide":6,"text":"Game-family classification synthesized from the reviewed papers. Direct sources: Sagduyu et al. (2023); Jia et al. (2023); Li et al. (2024); Behera and Chakraborty (2024); Dong et al. (2026)."}
+{"kind":"slide","id":"sl/obofkg","slide":7,"title":"Information and dynamics across training rounds","textShapes":7}
+{"kind":"textbox","id":"sh/sbmp0fyt","slide":7,"text":"Information and dynamics across training rounds","textPreview":"Information and dynamics across training rounds","textChars":47,"textLines":1,"bbox":[74,46,1020,52]}
+{"kind":"shape","id":"sh/7at8ruh8","slide":7,"name":"title accent","bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/69k7ypgn","slide":7,"text":"07","textPreview":"07","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/58bqpkz2","slide":7,"text":"Incomplete information","textPreview":"Incomplete information","textChars":22,"textLines":1,"bbox":[94,182,420,34]}
+{"kind":"textbox","id":"sh/k72pwfyh","slide":7,"text":"A defender cannot directly observe whether an unusual update comes from malicious behavior or benign data heterogeneity.","textPreview":"A defender cannot directly observe whether an unusual update comes from malicious behavior or benign data heterogeneity.","textChars":120,"textLines":1,"bbox":[94,232,420,126]}
+{"kind":"textbox","id":"sh/j6t8nahw","slide":7,"text":"Repeated interaction","textPreview":"Repeated interaction","textChars":20,"textLines":1,"bbox":[738,182,420,34]}
+{"kind":"textbox","id":"sh/i5k7u5gr","slide":7,"text":"Training rounds create history. Previous actions can change trust, detection risk, model state, and later incentives.","textPreview":"Training rounds create history. Previous actions can change trust, detection risk, model state, and later incentives.","textChars":117,"textLines":1,"bbox":[738,232,420,126]}
+{"kind":"textbox","id":"sh/x4bql0z6","slide":7,"text":"Bayesian models represent uncertainty through beliefs over hidden types. Markov models represent how the state changes after actions.","textPreview":"Bayesian models represent uncertainty through beliefs over hidden types. Markov models represent how the state changes after actions.","textChars":133,"textLines":1,"bbox":[184,470,900,62]}
+{"kind":"notes","id":"nt/obofkg","slide":7,"text":"Li et al. (2024), Meta Stackelberg Game, models uncertain attack types with a Bayesian Stackelberg Markov game and online adaptation. arXiv:2410.17431."}
+{"kind":"slide","id":"sl/e455nq","slide":8,"title":"Literature map: five different uses of game theory","textShapes":2}
+{"kind":"textbox","id":"sh/sv210rip","slide":8,"text":"Literature map: five different uses of game theory","textPreview":"Literature map: five different uses of game theory","textChars":50,"textLines":1,"bbox":[74,46,1020,52]}
+{"kind":"shape","id":"sh/rutkrmh4","slide":8,"name":"title accent","bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/6tkjyh0j","slide":8,"text":"08","textPreview":"08","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"table","id":"tb/8z61cfqh","slide":8,"name":"","rows":6,"cols":3,"preview":"Paper | Game-theory approach | Primary purpose","bbox":[74,145,1130,472]}
+{"kind":"notes","id":"nt/e455nq","slide":8,"text":"Sources: Sagduyu, Erpek, and Shi (2023), arXiv:2312.17164; Jia et al. (2023), FedGame, NeurIPS 2023; Li et al. (2024), arXiv:2410.17431; Behera and Chakraborty (2024), arXiv:2410.04058; Dong et al. (2026), IEEE TIFS, DOI 10.1109/TIFS.2026.3674690."}
+{"kind":"slide","id":"sl/m5r4ra","slide":9,"title":"How the reviewed papers differ","textShapes":2}
+{"kind":"textbox","id":"sh/10r2xsvy","slide":9,"text":"How the reviewed papers differ","textPreview":"How the reviewed papers differ","textChars":30,"textLines":1,"bbox":[74,46,1020,52]}
+{"kind":"shape","id":"sh/ed0j2xw7","slide":9,"name":"title accent","bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/ze9kv2ds","slide":9,"text":"09","textPreview":"09","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"table","id":"tb/tsri9gj2","slide":9,"name":"","rows":6,"cols":4,"preview":"Paper | Players | Information / timing | Strategic focus","bbox":[60,145,1160,485]}
+{"kind":"notes","id":"nt/m5r4ra","slide":9,"text":"Comparison based on the papers' stated models and evaluated objectives. Sources: Sagduyu et al. (2023), arXiv:2312.17164; Jia et al. (2023), NeurIPS 2023; Li et al. (2024), arXiv:2410.17431; Behera and Chakraborty (2024), arXiv:2410.04058; Dong et al. (2026), DOI 10.1109/TIFS.2026.3674690."}
+{"kind":"slide","id":"sl/4aoz8k","slide":10,"title":"Literature synthesis","textShapes":8}
+{"kind":"textbox","id":"sh/vuxsnu5w","slide":10,"text":"Literature synthesis","textPreview":"Literature synthesis","textChars":20,"textLines":1,"bbox":[74,46,1020,52]}
+{"kind":"shape","id":"sh/wvq9wzmh","slide":10,"name":"title accent","bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/hwzap4n2","slide":10,"text":"10","textPreview":"10","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"shape","id":"sh/m5orq5of","slide":10,"name":"bullet marker","bbox":[98,187,10,10]}
+{"kind":"textbox","id":"sh/7qx8ja5k","slide":10,"text":"Strategic defense has strong centralized-FL precedents","textPreview":"Strategic defense has strong centralized-FL precedents","textChars":54,"textLines":1,"bbox":[126,180,1012,30]}
+{"kind":"textbox","id":"sh/8r69sfm5","slide":10,"text":"Nash, minimax, and Bayesian Stackelberg approaches explicitly model attacker and defender incentives.","textPreview":"Nash, minimax, and Bayesian Stackelberg approaches explicitly model attacker and defender incentives.","textChars":101,"textLines":1,"bbox":[126,213,1012,58]}
+{"kind":"shape","id":"sh/9sfalknq","slide":10,"name":"bullet marker","bbox":[98,337,10,10]}
+{"kind":"textbox","id":"sh/y14rm5o3","slide":10,"text":"DFL work uses game theory in a different way","textPreview":"DFL work uses game theory in a different way","textChars":44,"textLines":1,"bbox":[126,330,1012,30]}
+{"kind":"textbox","id":"sh/z2d8fa5o","slide":10,"text":"pFedGame focuses on local aggregation weights, while FORCE uses contribution valuation for Byzantine resilience.","textPreview":"pFedGame focuses on local aggregation weights, while FORCE uses contribution valuation for Byzantine resilience.","textChars":112,"textLines":1,"bbox":[126,363,1012,58]}
+{"kind":"shape","id":"sh/bqx4vqxs","slide":10,"name":"bullet marker","bbox":[98,487,10,10]}
+{"kind":"textbox","id":"sh/ap43mlgn","slide":10,"text":"The terminology needs care","textPreview":"The terminology needs care","textChars":26,"textLines":1,"bbox":[126,480,1012,30]}
+{"kind":"textbox","id":"sh/xsfmxgfy","slide":10,"text":"A game-theoretic aggregation heuristic differs from an adversarial strategic game with players, actions, information, payoffs, and equilibrium.","textPreview":"A game-theoretic aggregation heuristic differs from an adversarial strategic game with players, actions, information, payoffs, and equili...","textChars":143,"textLines":1,"bbox":[126,513,1012,58]}
+{"kind":"notes","id":"nt/4aoz8k","slide":10,"text":"Synthesis from all reviewed sources. The distinctions reflect the papers' stated players, objectives, and evaluation settings rather than a claim of complete literature coverage."}
+{"kind":"slide","id":"sl/lkfoa7","slide":11,"title":"Selected references","textShapes":8}
+{"kind":"textbox","id":"sh/sv6pcv6h","slide":11,"text":"Selected references","textPreview":"Selected references","textChars":19,"textLines":1,"bbox":[74,46,1020,52]}
+{"kind":"shape","id":"sh/ruxo3q5w","slide":11,"name":"title accent","bbox":[74,112,78,6]}
+{"kind":"textbox","id":"sh/qto7alob","slide":11,"text":"11","textPreview":"11","textChars":2,"textLines":1,"bbox":[1140,54,64,30]}
+{"kind":"textbox","id":"sh/58f61gn6","slide":11,"text":"1. Sagduyu, Erpek, and Shi. Securing NextG Systems against Poisoning Attacks on Federated Learning: A Game-Theoretic Solution. arXiv:2312.17164, 2023.","textPreview":"1. Sagduyu, Erpek, and Shi. Securing NextG Systems against Poisoning Attacks on Federated Learning: A Game-Theoretic Solution. arXiv:2312...","textChars":150,"textLines":1,"bbox":[84,160,1110,54]}
+{"kind":"textbox","id":"sh/476p8b6l","slide":11,"text":"2. Jia et al. FedGame: A Game-Theoretic Defense against Backdoor Attacks in Federated Learning. NeurIPS 2023.","textPreview":"2. Jia et al. FedGame: A Game-Theoretic Defense against Backdoor Attacks in Federated Learning. NeurIPS 2023.","textChars":109,"textLines":1,"bbox":[84,244,1110,48]}
+{"kind":"textbox","id":"sh/36xoz650","slide":11,"text":"3. Li et al. Meta Stackelberg Game: Robust Federated Learning against Adaptive and Mixed Poisoning Attacks. arXiv:2410.17431, 2024.","textPreview":"3. Li et al. Meta Stackelberg Game: Robust Federated Learning against Adaptive and Mixed Poisoning Attacks. arXiv:2410.17431, 2024.","textChars":131,"textLines":1,"bbox":[84,326,1110,54]}
+{"kind":"textbox","id":"sh/i5o761of","slide":11,"text":"4. Behera and Chakraborty. pFedGame: Decentralized Federated Learning using Game Theory in Dynamic Topology. arXiv:2410.04058, 2024.","textPreview":"4. Behera and Chakraborty. pFedGame: Decentralized Federated Learning using Game Theory in Dynamic Topology. arXiv:2410.04058, 2024.","textChars":132,"textLines":1,"bbox":[84,414,1110,54]}
+{"kind":"textbox","id":"sh/h4v6xwnu","slide":11,"text":"5. Dong et al. FORCE: Byzantine-Resilient Decentralized Federated Learning via Game-Theoretic Contribution Aggregation. IEEE TIFS, 2026. DOI: 10.1109/TIFS.2026.3674690.","textPreview":"5. Dong et al. FORCE: Byzantine-Resilient Decentralized Federated Learning via Game-Theoretic Contribution Aggregation. IEEE TIFS, 2026. ...","textChars":168,"textLines":1,"bbox":[84,500,1110,54]}
+{"kind":"textbox","id":"sh/g3mp4b69","slide":11,"text":"Full links and reading notes: game_theory_research_note.md","textPreview":"Full links and reading notes: game_theory_research_note.md","textChars":58,"textLines":1,"bbox":[84,620,820,24]}
+{"kind":"notes","id":"nt/lkfoa7","slide":11,"text":"Bibliographic references are included visibly on this final slide. Verify final publication status for arXiv preprints before using them in the formal thesis bibliography."}
