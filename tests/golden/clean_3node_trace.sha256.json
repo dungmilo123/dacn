@@ -1,0 +1,54 @@
+{
+  "config": "configs/clean_3node.yaml",
+  "digests": {
+    "config.json": "9035085925144e9c0c8f894944a4d79bdeb8f7711e5c5fd6ca656ef5c2415a52",
+    "events.jsonl": "701939a12e2c219c42d060e03c95d24de283fa654df6bf92535cb441120bbad6",
+    "manifest.json": "f8489b354ff11beb922bae1b77e3bf98a4b0c866aaeb27e6f981c898cb7e3451",
+    "tensors.npz": "54bb28b588147c3a7b9725c579e32da1e561c5ccf09dfaa944b87253c47d8149"
+  },
+  "expected": {
+    "aggregation": "plain_average",
+    "attack_kind": "none",
+    "completed": true,
+    "compromised_node": null,
+    "edges": [
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        2
+      ]
+    ],
+    "event_count": 2,
+    "has_initial_snapshot": true,
+    "node_types": {
+      "0": "benign",
+      "1": "benign",
+      "2": "benign"
+    },
+    "nodes": [
+      0,
+      1,
+      2
+    ],
+    "recorded_rounds": 2,
+    "reference_sample_count": 96,
+    "schema_version": 1,
+    "snapshot_cadence": 1,
+    "snapshot_count": 3,
+    "snapshot_rounds": [
+      0,
+      1
+    ],
+    "tensor_entry_count": 72
+  },
+  "inventory": [
+    "config.json",
+    "events.jsonl",
+    "manifest.json",
+    "tensors.npz"
+  ],
+  "runner": "tests/trace_fixture_runner.py"
+}

@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dfl-sim"
+version = "0.1.0"
+description = "Deterministic synchronous Decentralized Federated Learning simulator (M001 core)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "networkx>=3.2,<4",
+    "numpy>=1.26,<3",
+    "pydantic>=2.6,<3",
+    "pyyaml>=6.0,<7",
+    "torch>=2.2",
+    "torchvision>=0.17",
+    # Read-only local replay UI (R011, S05). Bounded to Python 3.11-compatible
+    # majors; the simulator core never imports these (the viewer app is built
+    # lazily), so importing/running the simulator is unchanged.
+    "dash>=3.0,<4",
+    "dash-cytoscape>=1.0,<2",
+    "plotly>=5.20,<8",
+]
+
+[project.scripts]
+dfl = "dfl_sim.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    # Real-browser acceptance for the replay viewer (S05/T03). The bundled
+    # `page` fixture is only used by the opt-in Chromium smoke, so the ordinary
+    # offline suite never needs an installed browser binary.
+    "pytest-playwright>=0.6,<1",
+]
+
+[tool.uv]
+package = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dfl_sim"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "browser: real Playwright browser end-to-end test; opt-in via DFL_RUN_BROWSER_TESTS=1",
+]

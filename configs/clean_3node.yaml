@@ -1,0 +1,37 @@
+# Clean 3-node chain episode used as the S01 acceptance configuration.
+# Deterministic CPU bitwise mode with a short, bounded clean run.
+seed: 20240101
+rounds: 2
+device: cpu
+bitwise: true
+
+model:
+  name: small_cnn
+
+data:
+  dataset: mnist
+  partition: iid
+  samples_per_node: 64
+  data_root: data
+  download: false
+
+training:
+  optimizer: sgd
+  learning_rate: 0.05
+  batch_size: 16
+  local_epochs: 1
+  num_workers: 0
+
+topology:
+  kind: chain3
+
+aggregation:
+  kind: plain_average
+
+# Bounded privileged post-commit evaluation (R008) and trace cadence (R009).
+evaluation:
+  max_samples: 512
+  batch_size: 64
+
+trace:
+  snapshot_cadence: 1

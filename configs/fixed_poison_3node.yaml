@@ -1,0 +1,43 @@
+# Deterministic fixed-poison 3-node chain episode (S02 acceptance config).
+# Identical to configs/clean_3node.yaml except for a fixed D016 endpoint
+# attacker: node 0 reverses its outgoing model with kappa=5.0 ("strong").
+# MNIST download stays disabled so the episode is fully offline/reproducible.
+seed: 20240101
+rounds: 2
+device: cpu
+bitwise: true
+
+model:
+  name: small_cnn
+
+data:
+  dataset: mnist
+  partition: iid
+  samples_per_node: 64
+  data_root: data
+  download: false
+
+training:
+  optimizer: sgd
+  learning_rate: 0.05
+  batch_size: 16
+  local_epochs: 1
+  num_workers: 0
+
+topology:
+  kind: chain3
+
+attack:
+  compromised_node: 0
+  intensity: strong
+
+aggregation:
+  kind: plain_average
+
+# Bounded privileged post-commit evaluation (R008) and trace cadence (R009).
+evaluation:
+  max_samples: 512
+  batch_size: 64
+
+trace:
+  snapshot_cadence: 1
