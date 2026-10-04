@@ -14,6 +14,10 @@ import pytest
 import yaml
 
 from dfl_sim import (
+    FULL_VARIANT,
+    NO_BELIEF_VARIANT,
+    NO_STRATEGIC_VARIANT,
+    SOURCE_MU_A,
     CalibrationConfig,
     CalibrationConfigError,
     load_calibration_config,
@@ -294,3 +298,41 @@ def test_error_text_is_bounded() -> None:
     with pytest.raises(CalibrationConfigError) as excinfo:
         parse_dict(base_dict(**{"x" * 5000: "y"}))
     assert len(str(excinfo.value)) <= 500
+
+
+# --------------------------------------------------------------------------- #
+# Ablation variant plumbing (S03/T01)
+# --------------------------------------------------------------------------- #
+def test_variant_defaults_to_full_and_derives_source_mixture() -> None:
+    config = parse_dict(base_dict())
+    assert config.variant == FULL_VARIANT
+    assert tuple(config.mu_a) == SOURCE_MU_A
+    assert config.effective_mu_a == SOURCE_MU_A
+
+
+def test_no_belief_variant_keeps_source_mixture() -> None:
+    config = parse_dict(base_dict(variant=NO_BELIEF_VARIANT))
+    assert config.variant == NO_BELIEF_VARIANT
+    assert config.effective_mu_a == SOURCE_MU_A
+
+
+def test_no_strategic_variant_derives_pinned_strong_mixture() -> None:
+    config = parse_dict(base_dict(variant=NO_STRATEGIC_VARIANT))
+    assert config.variant == NO_STRATEGIC_VARIANT
+    # The input mixture stays the pinned source protocol; only the derived
+    # effective mixture changes.
+    assert tuple(config.mu_a) == SOURCE_MU_A
+    assert config.effective_mu_a == (5.0,)
+
+
+@pytest.mark.parametrize("bad", [True, False, 1, 0, None, ["full"], "bogus"])
+def test_invalid_variant_rejected(bad: object) -> None:
+    with pytest.raises(CalibrationConfigError):
+        parse_dict(base_dict(variant=bad))
+
+
+def test_arbitrary_attacker_mixture_still_rejected_for_no_strategic() -> None:
+    # no_strategic derives (5,); the canonical source mixture is still required
+    # as input, so an arbitrary attacker setting cannot be smuggled in.
+    with pytest.raises(CalibrationConfigError):
+        parse_dict(base_dict(variant=NO_STRATEGIC_VARIANT, mu_a=[5.0]))

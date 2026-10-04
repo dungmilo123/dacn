@@ -662,6 +662,11 @@ def estimate_artifact(
         "prior": [cell.model_dump(mode="json") for cell in prior],
         "support": support.model_dump(mode="json"),
         "coverage": coverage.model_dump(mode="json"),
+        # Optional schema-v1 ablation provenance (T01). Always present in the
+        # canonical body (``None`` until T02 populates it) so the aggregate
+        # digest matches a default ``model_dump`` of the parsed manifest, which
+        # emits the defaulted field as JSON null.
+        "derivation": None,
         "payloads": {
             LIKELIHOOD_FILENAME: {
                 "size_bytes": len(likelihood_bytes),

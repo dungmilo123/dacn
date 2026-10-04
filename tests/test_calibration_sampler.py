@@ -13,6 +13,8 @@ import pytest
 import torch
 
 from dfl_sim import (
+    NO_BELIEF_VARIANT,
+    NO_STRATEGIC_VARIANT,
     CalibrationError,
     CalibrationSchedule,
     EpisodeSpec,
@@ -221,3 +223,49 @@ def test_prior_counts_condition_on_benign_receiver() -> None:
 def test_count_prior_states_rejects_unvalidated_type() -> None:
     with pytest.raises(CalibrationError, match="CalibrationConfig"):
         count_prior_states({"episodes": 2}, ())  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# Variant effective-intensity selection (S03/T01)
+# --------------------------------------------------------------------------- #
+def test_full_and_no_belief_schedules_are_identical() -> None:
+    full = make_schedule(episodes=9, p0=0.5)
+    no_belief = make_schedule(episodes=9, p0=0.5, variant=NO_BELIEF_VARIANT)
+    assert full.specs == no_belief.specs
+    assert full.summary == no_belief.summary
+    assert dict(no_belief.summary.intensity_counts) == dict(
+        full.summary.intensity_counts
+    )
+
+
+def test_no_strategic_changes_only_effective_intensity() -> None:
+    full = make_schedule(episodes=9, p0=0.5)
+    no_strategic = make_schedule(
+        episodes=9, p0=0.5, variant=NO_STRATEGIC_VARIANT
+    )
+
+    def pairing(schedule: CalibrationSchedule) -> list[tuple]:
+        return [
+            (spec.index, spec.seed, spec.stratum, spec.node)
+            for spec in schedule.specs
+        ]
+
+    assert pairing(full) == pairing(no_strategic)
+    assert full.summary.clean == no_strategic.summary.clean
+    assert full.summary.attacked == no_strategic.summary.attacked
+    assert full.summary.placement_counts == no_strategic.summary.placement_counts
+
+    attacked = [spec for spec in no_strategic.specs if spec.is_attacked]
+    assert attacked
+    assert {spec.intensity for spec in attacked} == {"strong"}
+    assert {spec.value for spec in attacked} == {5.0}
+
+
+def test_effective_mixture_property_is_variant_derived() -> None:
+    assert parse_dict(base_dict()).effective_mu_a == (0.0, 2.0, 5.0)
+    assert parse_dict(
+        base_dict(variant=NO_BELIEF_VARIANT)
+    ).effective_mu_a == (0.0, 2.0, 5.0)
+    assert parse_dict(
+        base_dict(variant=NO_STRATEGIC_VARIANT)
+    ).effective_mu_a == (5.0,)

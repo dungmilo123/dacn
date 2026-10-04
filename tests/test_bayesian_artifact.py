@@ -22,6 +22,15 @@ import pytest
 from pydantic import ValidationError
 
 from dfl_sim import bayesian_artifact as bayesian_artifact_module
+from dfl_sim.ablation import (
+    ABLATION_PROTOCOL_VERSION,
+    CANDIDATE_PROTOCOL,
+    FULL_VARIANT,
+    ISOLATION_STATEMENTS,
+    NO_STRATEGIC_EFFECTIVE_MU_A,
+    NO_STRATEGIC_VARIANT,
+    SOURCE_MU_A,
+)
 from dfl_sim.bayesian_artifact import (
     ARTIFACT_SCHEMA,
     ARTIFACT_SCHEMA_VERSION,
@@ -30,6 +39,7 @@ from dfl_sim.bayesian_artifact import (
     MAX_ARTIFACT_FILE_BYTES,
     PAYOFF_FILENAME,
     BayesianArtifactError,
+    CalibrationDerivation,
     canonical_json_bytes,
     compute_aggregate_digest,
     interval_bin_index,
@@ -499,3 +509,157 @@ def test_duplicate_json_key_in_payload_is_rejected(tmp_path: Path) -> None:
     error = _error_for(path)
     assert error.validation_class == "duplicate_key"
     assert error.filename == LIKELIHOOD_FILENAME
+
+
+# --------------------------------------------------------------------------- #
+# Optional calibration-derivation metadata (S03/T01, D037)
+# --------------------------------------------------------------------------- #
+def _derivation(**overrides: object) -> dict:
+    base: dict = {
+        "protocol_version": ABLATION_PROTOCOL_VERSION,
+        "variant": FULL_VARIANT,
+        "isolation_statement": ISOLATION_STATEMENTS[FULL_VARIANT],
+        "source_mu_a": list(SOURCE_MU_A),
+        "effective_mu_a": list(SOURCE_MU_A),
+        "seed": 20240101,
+        "calibration_config_digest": "a" * 64,
+        "dataset_inputs_digest": "b" * 64,
+        "partition_membership_digest": "c" * 64,
+        "schedule_pairing_digest": "d" * 64,
+        "episodes": 4,
+        "rounds": 12,
+        "design_size": 8,
+        "candidate_protocol": CANDIDATE_PROTOCOL,
+        "candidate_cap": 4,
+        "data_provenance": "injected",
+    }
+    base.update(overrides)
+    return base
+
+
+def _manifest_with_derivation(derivation: dict | None = None) -> dict:
+    body = copy.deepcopy(_load_json(MANIFEST_FILENAME))
+    assert isinstance(body, dict)
+    if derivation is not None:
+        body["derivation"] = derivation
+    return body
+
+
+def test_legacy_fixture_loads_without_derivation_and_digest_unchanged() -> None:
+    artifact = load_bayesian_artifact(FIXTURE)
+    assert artifact.manifest.derivation is None
+    raw = _load_json(MANIFEST_FILENAME)
+    assert isinstance(raw, dict)
+    assert compute_aggregate_digest(raw) == raw["aggregate_digest"]
+
+
+def test_manifest_with_valid_full_derivation_loads(tmp_path: Path) -> None:
+    path = _write_artifact(
+        tmp_path / "artifact", manifest=_manifest_with_derivation(_derivation())
+    )
+    loaded = load_bayesian_artifact(path)
+    assert loaded.manifest.derivation is not None
+    assert loaded.manifest.derivation.variant == FULL_VARIANT
+    assert tuple(loaded.manifest.derivation.effective_mu_a) == SOURCE_MU_A
+
+
+def test_manifest_with_valid_no_strategic_derivation_loads(tmp_path: Path) -> None:
+    body = _manifest_with_derivation()
+    body["provenance"]["mu_a"] = list(NO_STRATEGIC_EFFECTIVE_MU_A)
+    body["derivation"] = _derivation(
+        variant=NO_STRATEGIC_VARIANT,
+        effective_mu_a=list(NO_STRATEGIC_EFFECTIVE_MU_A),
+        isolation_statement=ISOLATION_STATEMENTS[NO_STRATEGIC_VARIANT],
+    )
+    path = _write_artifact(tmp_path / "artifact", manifest=body)
+    loaded = load_bayesian_artifact(path)
+    assert loaded.manifest.derivation.variant == NO_STRATEGIC_VARIANT
+    assert tuple(loaded.manifest.provenance.mu_a) == (5.0,)
+
+
+def test_derivation_effective_mixture_must_match_provenance(tmp_path: Path) -> None:
+    # Internally consistent no-strategic metadata, but the sampler provenance
+    # still records the full source mixture: the cross-check must fail closed.
+    body = _manifest_with_derivation()
+    body["derivation"] = _derivation(
+        variant=NO_STRATEGIC_VARIANT,
+        effective_mu_a=list(NO_STRATEGIC_EFFECTIVE_MU_A),
+        isolation_statement=ISOLATION_STATEMENTS[NO_STRATEGIC_VARIANT],
+    )
+    path = _write_artifact(tmp_path / "artifact", manifest=body)
+    error = _error_for(path)
+    assert error.validation_class == "derivation"
+
+
+def test_derivation_candidate_cap_must_match_action_space(tmp_path: Path) -> None:
+    path = _write_artifact(
+        tmp_path / "artifact",
+        manifest=_manifest_with_derivation(_derivation(candidate_cap=7)),
+    )
+    error = _error_for(path)
+    assert error.validation_class == "derivation"
+
+
+@pytest.mark.parametrize("bad", [True, 1, None, "bogus"])
+def test_derivation_rejects_bad_variant(tmp_path: Path, bad: object) -> None:
+    path = _write_artifact(
+        tmp_path / "artifact",
+        manifest=_manifest_with_derivation(_derivation(variant=bad)),
+    )
+    assert _error_for(path).validation_class == "schema"
+
+
+def test_derivation_rejects_bad_digest(tmp_path: Path) -> None:
+    path = _write_artifact(
+        tmp_path / "artifact",
+        manifest=_manifest_with_derivation(
+            _derivation(calibration_config_digest="nope")
+        ),
+    )
+    assert _error_for(path).validation_class == "schema"
+
+
+def test_derivation_rejects_non_finite_numeric(tmp_path: Path) -> None:
+    # A non-finite metadata value cannot survive canonical integer encoding; the
+    # loader's strict JSON parse must reject it before any model validation.
+    path = _write_artifact(
+        tmp_path / "artifact", manifest=_manifest_with_derivation(_derivation())
+    )
+    _rewrite_manifest_text(
+        path, lambda text: text.replace('"seed": 20240101', '"seed": NaN')
+    )
+    assert _error_for(path).validation_class == "non_finite"
+
+
+def test_derivation_rejects_inconsistent_full_effective_mixture(tmp_path: Path) -> None:
+    path = _write_artifact(
+        tmp_path / "artifact",
+        manifest=_manifest_with_derivation(_derivation(effective_mu_a=[5.0])),
+    )
+    assert _error_for(path).validation_class == "schema"
+
+
+def test_derivation_rejects_unknown_data_provenance(tmp_path: Path) -> None:
+    path = _write_artifact(
+        tmp_path / "artifact",
+        manifest=_manifest_with_derivation(
+            _derivation(data_provenance="synthetic")
+        ),
+    )
+    assert _error_for(path).validation_class == "schema"
+
+
+def test_derivation_rejects_unknown_key(tmp_path: Path) -> None:
+    path = _write_artifact(
+        tmp_path / "artifact",
+        manifest=_manifest_with_derivation(_derivation(surprise=True)),
+    )
+    assert _error_for(path).validation_class == "schema"
+
+
+def test_derivation_model_is_strict_and_frozen() -> None:
+    model = CalibrationDerivation.model_validate(_derivation())
+    with pytest.raises(ValidationError):
+        model.variant = NO_STRATEGIC_VARIANT  # type: ignore[misc]
+    with pytest.raises(ValidationError):
+        CalibrationDerivation.model_validate(_derivation(extra_key=1))

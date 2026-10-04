@@ -71,22 +71,35 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
 __all__ = [
+    "ABLATION_PROTOCOL_VERSION",
     "ARTIFACT_FILENAMES",
     "ARTIFACT_SCHEMA",
     "ARTIFACT_SCHEMA_VERSION",
+    "CALIBRATION_VARIANTS",
+    "CANDIDATE_PROTOCOL",
+    "CANDIDATE_PROTOCOLS",
+    "FULL_VARIANT",
+    "ISOLATION_STATEMENTS",
     "LIKELIHOOD_FILENAME",
     "MANIFEST_FILENAME",
     "MAX_ARTIFACT_FILE_BYTES",
+    "NO_BELIEF_VARIANT",
+    "NO_STRATEGIC_EFFECTIVE_MU_A",
+    "NO_STRATEGIC_KAPPA",
+    "NO_STRATEGIC_VARIANT",
     "PAYOFF_FILENAME",
+    "SOURCE_MU_A",
     "ActionSpaceProvenance",
     "ArtifactManifest",
     "BayesianArtifact",
     "BayesianArtifactError",
     "BinSet",
+    "CalibrationDerivation",
     "CategoricalBins",
     "CoverageMetadata",
     "IntervalBins",
@@ -124,6 +137,57 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 #: Absolute tolerance for prior normalization (unit mass per degree).
 _PRIOR_SUM_TOLERANCE = 1e-9
+
+# --------------------------------------------------------------------------- #
+# Calibration ablation assumptions and derivation metadata (S03/T01, D036/D037)
+# --------------------------------------------------------------------------- #
+#: Version of the calibration-derivation assumption protocol. Bumping it
+#: invalidates previously pinned match identities.
+ABLATION_PROTOCOL_VERSION = "calibration-derivation-v1"
+
+#: The canonical full/source attack mixture (D016 zero/weak/strong kappa 0/2/5).
+SOURCE_MU_A: tuple[float, ...] = (0.0, 2.0, 5.0)
+
+#: The pinned strong attacker used by the no-strategic ablation (D036).
+NO_STRATEGIC_KAPPA: float = 5.0
+NO_STRATEGIC_EFFECTIVE_MU_A: tuple[float, ...] = (NO_STRATEGIC_KAPPA,)
+
+FULL_VARIANT: str = "full"
+NO_BELIEF_VARIANT: str = "no_belief"
+NO_STRATEGIC_VARIANT: str = "no_strategic"
+
+Variant = Literal["full", "no_belief", "no_strategic"]
+CALIBRATION_VARIANTS: tuple[str, ...] = (
+    FULL_VARIANT,
+    NO_BELIEF_VARIANT,
+    NO_STRATEGIC_VARIANT,
+)
+
+#: The single feasible-candidate enumeration protocol the action space pins.
+CANDIDATE_PROTOCOL = "enumerate_candidate_actions"
+CANDIDATE_PROTOCOLS: tuple[str, ...] = (CANDIDATE_PROTOCOL,)
+
+#: Canonical, human-auditable isolation statement per variant.
+ISOLATION_STATEMENTS: Mapping[str, str] = MappingProxyType(
+    {
+        FULL_VARIANT: (
+            "Full belief and fixed source attacker mixture (kappa 0/2/5); no "
+            "component removed."
+        ),
+        NO_BELIEF_VARIANT: (
+            "Belief component removed: exact uniform posterior over feasible "
+            "joint states; payoff tables, action space and fixed source "
+            "attacker mixture retained."
+        ),
+        NO_STRATEGIC_VARIANT: (
+            "Fixed-behavior sensitivity: every attacked episode uses the "
+            "pinned strong attacker (kappa=5); the belief component is "
+            "retained. Calibration attack composition and trajectories differ "
+            "from the full source protocol, so the strategic-response "
+            "contribution is not fully isolated."
+        ),
+    }
+)
 
 
 class BayesianArtifactError(RuntimeError):
@@ -170,6 +234,80 @@ class _ArtifactModel(BaseModel):
     """Base for every artifact model: unknown keys forbidden, frozen, strict."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class CalibrationDerivation(_ArtifactModel):
+    """Optional schema-v1 manifest metadata binding a calibrated artifact.
+
+    Every digest is a lowercase SHA-256 hex string. ``source_mu_a`` is pinned
+    to the canonical source mixture; ``effective_mu_a`` is derived from
+    ``variant``. When present, the artifact loader additionally enforces that
+    the declared effective mixture matches the sampler provenance. Legacy M002
+    manifests omit this block entirely and load unchanged.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, strict=True, allow_inf_nan=False
+    )
+
+    protocol_version: str
+    variant: Variant
+    isolation_statement: str
+    source_mu_a: FloatTuple
+    effective_mu_a: FloatTuple
+    seed: int = Field(ge=0)
+    calibration_config_digest: str
+    dataset_inputs_digest: str
+    partition_membership_digest: str
+    schedule_pairing_digest: str
+    episodes: int = Field(ge=0)
+    rounds: int = Field(ge=0)
+    design_size: int = Field(ge=1)
+    candidate_protocol: str
+    candidate_cap: int = Field(ge=1)
+    data_provenance: Literal["injected", "production"]
+
+    @field_validator(
+        "calibration_config_digest",
+        "dataset_inputs_digest",
+        "partition_membership_digest",
+        "schedule_pairing_digest",
+    )
+    @classmethod
+    def _valid_digest(cls, value: str) -> str:
+        if _SHA256_RE.match(value) is None:
+            raise ValueError(
+                "derivation digest must be a lowercase SHA-256 hex string"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "CalibrationDerivation":
+        if self.protocol_version != ABLATION_PROTOCOL_VERSION:
+            raise ValueError(
+                "unsupported derivation protocol version "
+                f"{self.protocol_version!r}"
+            )
+        if tuple(self.source_mu_a) != SOURCE_MU_A:
+            raise ValueError("source_mu_a must be the canonical source mixture")
+        expected = (
+            NO_STRATEGIC_EFFECTIVE_MU_A
+            if self.variant == NO_STRATEGIC_VARIANT
+            else SOURCE_MU_A
+        )
+        if tuple(self.effective_mu_a) != expected:
+            raise ValueError(
+                "effective_mu_a does not match the declared variant assumption"
+            )
+        if self.isolation_statement != ISOLATION_STATEMENTS[self.variant]:
+            raise ValueError(
+                "isolation_statement does not match the declared variant"
+            )
+        if self.candidate_protocol not in CANDIDATE_PROTOCOLS:
+            raise ValueError(
+                f"unknown candidate protocol {self.candidate_protocol!r}"
+            )
+        return self
 
 
 class SamplerProvenance(_ArtifactModel):
@@ -281,7 +419,14 @@ class PayloadDigest(_ArtifactModel):
 
 
 class ArtifactManifest(_ArtifactModel):
-    """Strict schema-v1 manifest envelope."""
+    """Strict schema-v1 manifest envelope.
+
+    ``derivation`` is an optional, additive calibration-ablation metadata block
+    (D037). Legacy M002 manifests that omit it still load and verify exactly as
+    before; newly calibrated artifacts (T02) populate it. When present the
+    loader enforces its internal variant/assumption consistency and binds its
+    effective attacker mixture to the sampler provenance.
+    """
 
     schema_name: str = Field(alias="schema")
     schema_version: int
@@ -292,6 +437,7 @@ class ArtifactManifest(_ArtifactModel):
     support: SupportMetadata
     coverage: CoverageMetadata
     payloads: dict[str, PayloadDigest]
+    derivation: CalibrationDerivation | None = None
     aggregate_digest: str
 
     model_config = ConfigDict(
@@ -649,9 +795,37 @@ def _validate_prior(prior: tuple[PriorCell, ...]) -> None:
         )
 
 
+def _validate_derivation(manifest: ArtifactManifest) -> None:
+    """Bind optional calibration-derivation metadata to the sampler provenance.
+
+    Internal (variant/source/effective/isolation/budget) consistency is already
+    enforced by :class:`CalibrationDerivation`. Here we check the cross-field
+    binding that only the whole manifest can verify: the declared effective
+    attacker mixture must equal the sampler provenance's recorded mixture, and
+    the candidate cap must equal the action-space degree cap.
+    """
+
+    derivation = manifest.derivation
+    if derivation is None:
+        return
+    _check(
+        tuple(manifest.provenance.mu_a) == tuple(derivation.effective_mu_a),
+        MANIFEST_FILENAME,
+        "derivation",
+        "declared effective mixture does not match sampler provenance",
+    )
+    _check(
+        derivation.candidate_cap == manifest.action_space.degree_cap,
+        MANIFEST_FILENAME,
+        "derivation",
+        "declared candidate cap does not match action-space degree cap",
+    )
+
+
 def _validate_manifest(manifest: ArtifactManifest) -> None:
     _validate_provenance(manifest.provenance)
     _validate_action_space(manifest.action_space)
+    _validate_derivation(manifest)
     _validate_interval_bins(manifest.bins.disagreement, name="disagreement")
     _validate_interval_bins(manifest.bins.relative_norm, name="relative_norm")
     _validate_interval_bins(manifest.bins.loss_delta, name="loss_delta")

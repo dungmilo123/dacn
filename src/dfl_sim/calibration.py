@@ -9,9 +9,12 @@ Design constraints:
 
 * **Deterministic and stratified.** The clean/attacked allocation is a rounded
   ``p0`` split clamped so a valid small run always contains at least one clean
-  and one attacked episode. Conditional on an attacked episode the fixed
-  attack mixture ``mu_a`` is cycled as a balanced mixture, so the pinned
-  intensities are used as evenly as the episode count allows.
+  and one attacked episode. Conditional on an attacked episode the *effective*
+  attack mixture (``config.effective_mu_a``) is cycled as a balanced mixture,
+  so the pinned intensities are used as evenly as the episode count allows.
+  Full and no-belief variants share the pinned source mixture; the
+  no-strategic variant derives the degenerate strong mixture ``(5,)`` without
+  changing counts, seeds, strata, or placements.
 * **Uniform non-isolated placement.** Eligible (degree >= 1) nodes are shuffled
   once with a sampler-only, domain-labelled seed and then cycled, so placement
   coverage is uniform and independent of experiment training order.
@@ -199,7 +202,7 @@ def build_schedule(config: CalibrationConfig) -> CalibrationSchedule:
     else:  # pragma: no cover - only a fully isolated topology reaches here
         placement = ()
 
-    mixture = tuple(float(value) for value in config.mu_a)
+    mixture = tuple(float(value) for value in config.effective_mu_a)
 
     specs: list[EpisodeSpec] = []
     for index in range(clean_count):

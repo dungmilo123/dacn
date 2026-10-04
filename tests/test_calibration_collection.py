@@ -16,6 +16,8 @@ import torch
 import pytest
 
 from dfl_sim import (
+    NO_BELIEF_VARIANT,
+    NO_STRATEGIC_VARIANT,
     CalibrationScoringError,
     CalibrationError,
     CalibrationObservationBuilder,
@@ -27,6 +29,7 @@ from dfl_sim import (
     partition_indices,
     resolve_seeds,
 )
+from dfl_sim import calibration_scoring as cs
 from helpers import MNISTShapedDataset, make_config
 from test_calibration_config import base_dict, parse_dict
 
@@ -254,3 +257,118 @@ def test_non_finite_design_loss_aborts_the_episode() -> None:
             evaluator=lambda *a, **k: 0.0,
         )
     assert sink == []
+
+
+# --------------------------------------------------------------------------- #
+# Collection provenance fingerprints (S03/T01, R021/D037)
+# --------------------------------------------------------------------------- #
+def test_collection_captures_injected_content_and_membership_provenance() -> None:
+    config = _make_calibration_config()
+    collection = collect_calibration(config, dataset=_dataset())
+    provenance = collection.provenance
+
+    assert provenance.data_provenance == "injected"
+    assert provenance.consumed_examples > 0
+    # consumed examples are the union of node partitions + design splits.
+    expected = {
+        index
+        for episode in collection.episodes
+        for _node, indices in episode.node_indices
+        for index in indices
+    } | {
+        index for episode in collection.episodes for index in episode.design_indices
+    }
+    assert provenance.consumed_examples == len(expected)
+    for digest in (
+        provenance.dataset_inputs_digest,
+        provenance.partition_membership_digest,
+        provenance.schedule_pairing_digest,
+    ):
+        assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+
+
+def test_three_variant_provenance_matches_on_source_inputs() -> None:
+    dataset = _dataset()
+    full = collect_calibration(_make_calibration_config(), dataset=dataset)
+    no_belief = collect_calibration(
+        _make_calibration_config(variant=NO_BELIEF_VARIANT), dataset=dataset
+    )
+    no_strategic = collect_calibration(
+        _make_calibration_config(variant=NO_STRATEGIC_VARIANT), dataset=dataset
+    )
+
+    for other in (no_belief, no_strategic):
+        assert (
+            other.provenance.dataset_inputs_digest
+            == full.provenance.dataset_inputs_digest
+        )
+        assert (
+            other.provenance.partition_membership_digest
+            == full.provenance.partition_membership_digest
+        )
+        assert (
+            other.provenance.schedule_pairing_digest
+            == full.provenance.schedule_pairing_digest
+        )
+        assert other.provenance.consumed_examples == full.provenance.consumed_examples
+        assert other.provenance.data_provenance == "injected"
+
+    # The no-strategic variant really does change the sampled attacker mix.
+    assert full.schedule.summary.intensity_counts != (
+        no_strategic.schedule.summary.intensity_counts
+    )
+
+
+def test_changed_dataset_content_changes_content_digest_only() -> None:
+    config = _make_calibration_config()
+    first = collect_calibration(
+        config, dataset=MNISTShapedDataset(200, separable=True, seed=11)
+    )
+    second = collect_calibration(
+        config, dataset=MNISTShapedDataset(200, separable=True, seed=12)
+    )
+    # Same partition scheme / seeds -> same membership and pairing identity.
+    assert (
+        first.provenance.partition_membership_digest
+        == second.provenance.partition_membership_digest
+    )
+    assert (
+        first.provenance.schedule_pairing_digest
+        == second.provenance.schedule_pairing_digest
+    )
+    # Different labels/tensors at the same indices -> different content digest.
+    assert (
+        first.provenance.dataset_inputs_digest
+        != second.provenance.dataset_inputs_digest
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Provenance failure surface (Q5)
+# --------------------------------------------------------------------------- #
+def test_unsupported_tensor_content_is_a_bounded_error() -> None:
+    with pytest.raises(CalibrationScoringError, match="unsupported dataset tensor"):
+        cs._canonical_example_bytes("not-a-tensor", where="index 0")
+
+
+def test_non_finite_tensor_content_is_a_bounded_error() -> None:
+    tensor = torch.full((1, 2, 2), float("nan"))
+    with pytest.raises(CalibrationScoringError, match="non-finite"):
+        cs._canonical_example_bytes(tensor, where="index 0")
+
+
+def test_non_integral_label_is_a_bounded_error() -> None:
+    with pytest.raises(CalibrationScoringError, match="must be an integer"):
+        cs._canonical_label("seven", where="index 0")
+
+
+def test_unavailable_dataset_example_is_a_bounded_error() -> None:
+    class Broken:
+        def __len__(self) -> int:
+            return 1
+
+        def __getitem__(self, index):
+            raise RuntimeError("boom")
+
+    with pytest.raises(CalibrationScoringError, match="unavailable"):
+        cs._consumed_dataset_examples(Broken(), [0])

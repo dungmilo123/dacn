@@ -43,6 +43,12 @@ from pydantic import (
     model_validator,
 )
 
+from .ablation import (
+    FULL_VARIANT,
+    SOURCE_MU_A,
+    Variant,
+    effective_mixture,
+)
 from .bayesian_artifact import (
     ActionSpaceProvenance,
     BinSet,
@@ -101,8 +107,11 @@ DEGREE_LABELS: tuple[str, ...] = ("1", "2", "3-4", "5+")
 PROGRESS_LABELS: tuple[str, ...] = ("early", "mid", "late")
 
 #: Pinned finite attack-mixture component values, in canonical order. These map
-#: one-to-one onto the D016 intensities zero/weak/strong (kappa 0/2/5).
-PINNED_MU_A: tuple[float, ...] = (0.0, 2.0, 5.0)
+#: one-to-one onto the D016 intensities zero/weak/strong (kappa 0/2/5). The
+#: canonical source protocol always carries this mixture; the no-strategic
+#: variant derives its effective degenerate mixture from the variant instead of
+#: accepting an arbitrary attacker setting.
+PINNED_MU_A: tuple[float, ...] = SOURCE_MU_A
 
 #: Maximum rendered error-message length (Q3 bounded diagnostics).
 MAX_ERROR_TEXT = 400
@@ -222,11 +231,17 @@ class CalibrationConfig(_StrictCalibrationModel):
         Target *clean* episode fraction in ``[0, 1]``. The schedule rounds it
         and clamps so a valid small run still contains at least one clean and
         one attacked episode.
+    ``variant``
+        The calibration ablation variant (default ``full``). ``full`` and
+        ``no_belief`` use the pinned source mixture ``(0, 2, 5)``; the
+        ``no_strategic`` variant derives the degenerate strong mixture ``(5,)``
+        at schedule-build time while retaining clean/attacked counts, seeds,
+        placements, rounds, bins, and action space.
     ``mu_a``
         Pinned finite attack-mixture component values ``(0, 2, 5)`` mapped
         exactly onto the D016 zero/weak/strong intensities. Conditional on an
-        attacked episode, the sampler cycles these as a deterministic balanced
-        mixture.
+        attacked episode, the sampler cycles the *effective* mixture as a
+        deterministic balanced mixture.
     ``max_compromised``
         Structurally pinned to ``1`` (at most one compromised node per episode).
     ``smoothing_alpha``
@@ -240,6 +255,7 @@ class CalibrationConfig(_StrictCalibrationModel):
     """
 
     experiment: ExperimentConfig
+    variant: Variant = FULL_VARIANT
     episodes: int = Field(ge=2, le=MAX_CALIBRATION_EPISODES)
     p0: float = Field(ge=0.0, le=1.0)
     mu_a: FloatTuple
@@ -276,6 +292,13 @@ class CalibrationConfig(_StrictCalibrationModel):
         _validate_bins(self.bins)
         _validate_action_space(self.action_space)
 
+        # Validate the declared variant and derive its effective mixture up
+        # front so an unknown/wrongly-typed variant fails closed at parse time.
+        try:
+            effective_mixture(self.variant, tuple(self.mu_a))
+        except Exception as exc:  # AblationError, bounded and re-raised
+            raise ValueError(str(exc)) from None
+
         node_count = topology_node_count(experiment.topology)
         required = node_count * experiment.data.samples_per_node + self.design_split_size
         if required > MNIST_TRAIN_EXAMPLES:
@@ -287,6 +310,16 @@ class CalibrationConfig(_StrictCalibrationModel):
                 f"only has {MNIST_TRAIN_EXAMPLES}"
             )
         return self
+
+    @property
+    def effective_mu_a(self) -> tuple[float, ...]:
+        """Return the variant-derived effective attacker mixture (D036).
+
+        Full and no-belief variants return the pinned source mixture; the
+        no-strategic variant returns the degenerate strong mixture ``(5,)``.
+        """
+
+        return effective_mixture(self.variant, tuple(self.mu_a))
 
 
 class _JsonConstant(ValueError):

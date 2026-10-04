@@ -47,8 +47,15 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TypeAlias
 
+import numpy as np
+import torch
 from torch.utils.data import Dataset
 
+from .ablation import (
+    dataset_content_digest,
+    membership_digest,
+    schedule_pairing_digest,
+)
 from .aggregation import aggregate_weighted_neighborhood
 from .bayesian_artifact import BinSet, interval_bin_index
 from .calibration import CalibrationSchedule, EpisodeSpec, derive_experiment_config
@@ -86,6 +93,7 @@ __all__ = [
     "CalibrationObservationBuilder",
     "CalibrationScoringError",
     "CandidateProfileScore",
+    "CollectionProvenance",
     "DesignLossEvaluator",
     "EpisodeCollection",
     "NeighborPayoffMarginal",
@@ -185,12 +193,38 @@ class AdvancedProfile:
 
 @dataclass(frozen=True, slots=True)
 class EpisodeCollection:
-    """Collected offline records for one reference episode."""
+    """Collected offline records for one reference episode.
+
+    ``node_indices`` is the episode's immutable node-local partition membership
+    (ascending node id -> index tuple), captured so collection provenance can
+    fingerprint which dataset inputs were consumed without re-deriving the
+    permutation.
+    """
 
     spec: EpisodeSpec
     design_indices: tuple[int, ...]
+    node_indices: tuple[tuple[int, tuple[int, ...]], ...]
     records: tuple[NodeRoundRecord, ...]
     advanced_profiles: tuple[AdvancedProfile, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionProvenance:
+    """Immutable fingerprints of the dataset inputs and partitions consumed.
+
+    ``data_provenance`` distinguishes an explicitly injected in-process dataset
+    from the production MNIST loader. ``dataset_inputs_digest`` is a content
+    fingerprint (labels/tensor bytes) of the consumed examples;
+    ``partition_membership_digest`` fingerprints the node/design membership;
+    ``schedule_pairing_digest`` fingerprints the index/seed/stratum/placement
+    pairing while excluding intensity, so intensity-only variants match.
+    """
+
+    data_provenance: str
+    dataset_inputs_digest: str
+    partition_membership_digest: str
+    schedule_pairing_digest: str
+    consumed_examples: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +234,7 @@ class CalibrationCollection:
     config: CalibrationConfig
     schedule: CalibrationSchedule
     episodes: tuple[EpisodeCollection, ...]
+    provenance: CollectionProvenance
 
     @property
     def records(self) -> tuple[NodeRoundRecord, ...]:
@@ -653,8 +688,118 @@ def collect_episode(
     return EpisodeCollection(
         spec=spec,
         design_indices=tuple(split.design_indices),
+        node_indices=tuple(
+            (int(node), tuple(int(index) for index in indices))
+            for node, indices in sorted(split.node_indices.items())
+        ),
         records=tuple(sink),
         advanced_profiles=advanced,
+    )
+
+
+def _canonical_example_bytes(value: object, *, where: str) -> bytes:
+    """Return canonical dtype/shape-tagged tensor bytes for one dataset input.
+
+    Raises :class:`CalibrationScoringError` (bounded, never a fabricated
+    fingerprint) for unsupported content, non-finite tensors, or a missing
+    dtype.
+    """
+
+    if isinstance(value, torch.Tensor):
+        tensor = value.detach().to("cpu").contiguous()
+        if tensor.numel() and not bool(torch.isfinite(tensor).all()):
+            raise CalibrationScoringError(f"dataset tensor is non-finite ({where})")
+        header = f"torch:{tensor.dtype}|{tuple(int(dim) for dim in tensor.shape)}"
+        return header.encode("utf-8") + tensor.numpy().tobytes()
+    if isinstance(value, np.ndarray):
+        array = np.ascontiguousarray(value)
+        if array.size and not bool(np.isfinite(array).all()):
+            raise CalibrationScoringError(f"dataset array is non-finite ({where})")
+        header = f"numpy:{array.dtype}|{tuple(int(dim) for dim in array.shape)}"
+        return header.encode("utf-8") + array.tobytes()
+    raise CalibrationScoringError(
+        f"unsupported dataset tensor content at {where}: {type(value).__name__}"
+    )
+
+
+def _canonical_label(value: object, *, where: str) -> int:
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            raise CalibrationScoringError(
+                f"dataset label at {where} must be scalar"
+            )
+        value = value.item()
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        raise CalibrationScoringError(
+            f"dataset label at {where} must be an integer, got "
+            f"{type(value).__name__}"
+        )
+    return int(value)
+
+
+def _consumed_dataset_examples(
+    dataset: Dataset, indices: Sequence[int]
+) -> list[tuple[int, int, bytes]]:
+    """Read and canonicalize each consumed dataset example exactly once."""
+
+    examples: list[tuple[int, int, bytes]] = []
+    for index in sorted({int(value) for value in indices}):
+        where = f"index {index}"
+        try:
+            sample = dataset[index]
+        except Exception as exc:
+            raise CalibrationScoringError(
+                f"dataset example at {where} is unavailable "
+                f"({type(exc).__name__})"
+            ) from exc
+        if not isinstance(sample, tuple) or len(sample) != 2:
+            raise CalibrationScoringError(
+                f"dataset example at {where} must be an (image, label) pair"
+            )
+        image, label = sample
+        examples.append(
+            (
+                int(index),
+                _canonical_label(label, where=where),
+                _canonical_example_bytes(image, where=where),
+            )
+        )
+    return examples
+
+
+def _collection_provenance(
+    schedule: CalibrationSchedule,
+    episodes: Sequence[EpisodeCollection],
+    dataset: Dataset,
+    *,
+    data_provenance: str,
+) -> CollectionProvenance:
+    """Fingerprint consumed dataset inputs, membership, and schedule pairing."""
+
+    membership_entries: list[dict] = []
+    consumed: set[int] = set()
+    for episode in episodes:
+        nodes = {
+            int(node): [int(index) for index in indices]
+            for node, indices in episode.node_indices
+        }
+        design = [int(index) for index in episode.design_indices]
+        membership_entries.append(
+            {"episode": int(episode.spec.index), "nodes": nodes, "design": design}
+        )
+        for indices in nodes.values():
+            consumed.update(indices)
+        consumed.update(design)
+
+    dataset_digest = dataset_content_digest(
+        _consumed_dataset_examples(dataset, sorted(consumed))
+    )
+    return CollectionProvenance(
+        data_provenance=data_provenance,
+        dataset_inputs_digest=dataset_digest,
+        partition_membership_digest=membership_digest(membership_entries),
+        schedule_pairing_digest=schedule_pairing_digest(schedule.specs),
+        consumed_examples=len(consumed),
     )
 
 
@@ -681,6 +826,7 @@ def collect_calibration(
     from .calibration import build_schedule
 
     schedule = build_schedule(config)
+    injected = dataset is not None
     if dataset is None:
         dataset = load_mnist_dataset(config.experiment)
     episodes = tuple(
@@ -689,6 +835,15 @@ def collect_calibration(
         )
         for spec in schedule.specs
     )
+    provenance = _collection_provenance(
+        schedule,
+        episodes,
+        dataset,
+        data_provenance="injected" if injected else "production",
+    )
     return CalibrationCollection(
-        config=config, schedule=schedule, episodes=episodes
+        config=config,
+        schedule=schedule,
+        episodes=episodes,
+        provenance=provenance,
     )
