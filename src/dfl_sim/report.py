@@ -37,6 +37,7 @@ import json
 import math
 import os
 import re
+import shutil
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -70,6 +71,15 @@ from .robustness_verify import (
     RobustnessVerifyDeps,
     RobustnessVerifyError,
     verify_robustness_study,
+)
+from .report_figures import (
+    FIGURE_DIRNAME,
+    FIGURE_SCHEMA,
+    FIGURE_SCHEMA_VERSION,
+    FigureArtifact,
+    FigureError,
+    attach_figure_identity,
+    render_figures,
 )
 from .trajectory import SCHEMA_VERSION, TraceReader, TrajectoryError
 
@@ -1090,6 +1100,19 @@ class ReportPropagation(_ReportModel):
     totals: dict[str, Any]
 
 
+class ReportFigureEntry(_ReportModel):
+    id: str
+    filename: str
+    title: str
+    digest: str
+
+
+class ReportFigures(_ReportModel):
+    schema_name: Literal["dfl_canonical_figures"] = Field(alias="schema")
+    schema_version: Literal[1]
+    entries: tuple[ReportFigureEntry, ...]
+
+
 class CanonicalReport(_ReportModel):
     schema_name: Literal["dfl_canonical_report"] = Field(alias="schema")
     schema_version: Literal[1]
@@ -1105,6 +1128,7 @@ class CanonicalReport(_ReportModel):
     rejection: ReportRejection
     propagation: ReportPropagation
     limitations: tuple[str, ...]
+    figures: ReportFigures | None = None
     report_digest: str
 
 
@@ -1137,6 +1161,8 @@ def validate_canonical_report(payload: object) -> dict:
     except Exception as exc:  # noqa: BLE001 - bounded fail-closed boundary
         raise CanonicalReportError(f"invalid canonical report: {_bounded(exc)}") from exc
     body = report.model_dump(mode="json", by_alias=True)
+    if body.get("figures") is None:
+        body.pop("figures", None)
     stored = body.pop("report_digest", None)
     _require(_is_sha256(stored), "canonical report is missing its digest")
     _require(
@@ -2185,37 +2211,211 @@ def build_report_payload(
     )
 
 
-def _publish_report(output_dir: Path, payload: Mapping[str, object]) -> tuple[str, Path]:
-    if os.path.lexists(output_dir) and os.path.islink(output_dir):
-        raise CanonicalReportError(f"report destination must not be a symlink: {output_dir}")
-    try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
+def _check_report_destination(destination: Path, root: Path) -> None:
+    """Reject a report destination that could clobber the matrix root."""
+
+    if os.path.lexists(destination) and os.path.islink(destination):
         raise CanonicalReportError(
-            f"could not create report directory {output_dir}: {_bounded(exc)}"
-        ) from exc
-    destination = output_dir / CANONICAL_REPORT_FILENAME
-    raw = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode("utf-8")
-    if destination.is_file() and destination.read_bytes() == raw:
-        return "unchanged", destination
-    try:
-        fd, temporary = tempfile.mkstemp(
-            dir=str(output_dir), prefix=".canonical-report.", suffix=".tmp"
+            f"report destination must not be a symlink: {destination}"
         )
+    if os.path.lexists(destination) and not destination.is_dir():
+        raise CanonicalReportError(
+            f"report destination is not a directory: {destination}"
+        )
+    try:
+        dest_real = os.path.realpath(destination)
+        root_real = os.path.realpath(root)
+    except OSError as exc:  # pragma: no cover - defensive
+        raise CanonicalReportError(
+            f"could not resolve report destination: {_bounded(exc)}"
+        ) from exc
+    if dest_real == root_real:
+        raise CanonicalReportError("report destination must not replace the matrix root")
+    if root_real.startswith(dest_real + os.sep):
+        raise CanonicalReportError("report destination must not contain the matrix root")
+
+
+def _figures_dir(output_dir: Path) -> Path:
+    return output_dir / FIGURE_DIRNAME
+
+
+def _write_bytes_atomic(path: Path, raw: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _validate_figure_publication(
+    payload: Mapping[str, object], figures: Sequence[FigureArtifact]
+) -> dict[str, bytes]:
+    """Fail closed unless the figure block exactly binds the rendered SVGs."""
+
+    block = payload.get("figures")
+    _require(isinstance(block, Mapping), "canonical report is missing its figures block")
+    assert isinstance(block, Mapping)
+    _require(block.get("schema") == FIGURE_SCHEMA, "figure block schema mismatch")
+    _require(
+        block.get("schema_version") == FIGURE_SCHEMA_VERSION,
+        "figure block schema version mismatch",
+    )
+    entries = block.get("entries")
+    _require(isinstance(entries, list), "figure block entries must be a list")
+    raw_by_name = {artifact.filename: artifact.svg.encode("utf-8") for artifact in figures}
+    if len(set(raw_by_name)) != len(figures):
+        raise CanonicalReportError("figure filenames are not unique")
+    _require(len(entries) == len(figures), "figure block entry count mismatch")
+    seen_ids: set[str] = set()
+    seen_files: set[str] = set()
+    for entry in entries:
+        _require(isinstance(entry, Mapping), "figure entry must be an object")
+        assert isinstance(entry, Mapping)
+        figure_id = entry.get("id")
+        filename = entry.get("filename")
+        digest = entry.get("digest")
+        _require(isinstance(figure_id, str) and figure_id, "figure entry id is invalid")
+        _require(
+            isinstance(filename, str)
+            and filename
+            and "/" not in filename
+            and "\\" not in filename
+            and filename not in (".", ".."),
+            "figure entry filename is unsafe",
+        )
+        _require(figure_id not in seen_ids, f"duplicate figure id {figure_id!r}")
+        _require(filename not in seen_files, f"duplicate figure filename {filename!r}")
+        seen_ids.add(figure_id)
+        seen_files.add(filename)
+        _require(_is_sha256(digest), "figure entry digest is not a sha256")
+        _require(
+            digest == _sha256_bytes(raw_by_name[filename]),
+            f"figure digest does not bind the rendered SVG for {filename!r}",
+        )
+    _require(seen_files == set(raw_by_name), "figure block omits a rendered figure")
+    return raw_by_name
+
+
+def _publish_report_directory(
+    output_dir: Path,
+    root: Path,
+    payload: Mapping[str, object],
+    figures: Sequence[FigureArtifact],
+) -> tuple[str, Path]:
+    """Atomically publish the report JSON and every SVG as one directory."""
+
+    _check_report_destination(output_dir, root)
+    raw_by_name = _validate_figure_publication(payload, figures)
+    report_raw = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode("utf-8")
+
+    if os.path.lexists(output_dir):
+        # Existing destination: compare first (idempotent) then replace each
+        # file atomically. Never leave a mixed old/new report directory.
+        report_path = output_dir / CANONICAL_REPORT_FILENAME
+        figures_dir = _figures_dir(output_dir)
+        unchanged = report_path.is_file() and report_path.read_bytes() == report_raw
+        if unchanged:
+            for filename, raw in raw_by_name.items():
+                path = figures_dir / filename
+                if not (path.is_file() and path.read_bytes() == raw):
+                    unchanged = False
+                    break
+        if unchanged:
+            return "unchanged", report_path
         try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(raw)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, destination)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+            _write_bytes_atomic(report_path, report_raw)
+            for filename, raw in sorted(raw_by_name.items()):
+                _write_bytes_atomic(figures_dir / filename, raw)
+        except OSError as exc:
+            raise CanonicalReportError(
+                f"could not publish canonical report: {_bounded(exc)}"
+            ) from exc
+        return "published", report_path
+
+    # Fresh destination: stage the whole directory, then rename it into place
+    # so a partial report is never visible.
+    parent = output_dir.parent
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise CanonicalReportError(
-            f"could not publish canonical report: {_bounded(exc)}"
+            f"could not create report parent {parent}: {_bounded(exc)}"
         ) from exc
-    return "published", destination
+    try:
+        staging = Path(
+            tempfile.mkdtemp(dir=str(parent), prefix=f".{output_dir.name}.staging-")
+        )
+    except OSError as exc:
+        raise CanonicalReportError(
+            f"could not stage canonical report: {_bounded(exc)}"
+        ) from exc
+    try:
+        _write_bytes_atomic(staging / CANONICAL_REPORT_FILENAME, report_raw)
+        for filename, raw in sorted(raw_by_name.items()):
+            _write_bytes_atomic(staging / FIGURE_DIRNAME / filename, raw)
+        os.replace(staging, output_dir)
+    except OSError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise CanonicalReportError(
+            f"could not publish canonical report directory: {_bounded(exc)}"
+        ) from exc
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return "published", output_dir / CANONICAL_REPORT_FILENAME
+
+
+def _semantic_body(payload: Mapping[str, object]) -> dict:
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in ("figures", "report_digest")
+    }
+
+
+def _verify_published_figures(
+    report_dir: Path, payload: Mapping[str, object], figures: Sequence[FigureArtifact]
+) -> None:
+    block = payload.get("figures")
+    _require(isinstance(block, Mapping), "published canonical report is missing its figures block")
+    assert isinstance(block, Mapping)
+    _require(block.get("schema") == FIGURE_SCHEMA, "published figure schema mismatch")
+    _require(
+        block.get("schema_version") == FIGURE_SCHEMA_VERSION,
+        "published figure schema version mismatch",
+    )
+    entries = block.get("entries")
+    _require(isinstance(entries, list), "published figure entries must be a list")
+    expected = {artifact.filename: artifact for artifact in figures}
+    _require(len(entries) == len(expected), "published figure count disagrees with a fresh render")
+    for entry in entries:
+        _require(isinstance(entry, Mapping), "published figure entry must be an object")
+        assert isinstance(entry, Mapping)
+        filename = entry.get("filename")
+        _require(isinstance(filename, str) and filename in expected, "published figure filename is unknown")
+        artifact = expected[filename]  # type: ignore[index]
+        _require(
+            entry.get("id") == artifact.figure_id,
+            f"published figure id disagrees for {filename!r}",
+        )
+        _require(
+            entry.get("digest") == artifact.digest,
+            f"published figure digest disagrees for {filename!r}",
+        )
+        path = _confined(report_dir, f"{FIGURE_DIRNAME}/{filename}", label="figure")
+        _require(path.is_file(), f"published figure is missing: {path}")
+        _require(
+            path.read_bytes() == artifact.svg.encode("utf-8"),
+            f"published figure bytes disagree with a fresh render: {filename!r}",
+        )
 
 
 def compile_canonical_report(
@@ -2224,31 +2424,39 @@ def compile_canonical_report(
     *,
     deps: CanonicalReportDeps | None = None,
 ) -> CanonicalReportResult:
-    """Compile and atomically publish ``canonical-report.json``.
+    """Compile and atomically publish the report directory (JSON + SVGs).
 
     The public path refuses injected inputs; an isolated fixture seam must pass
     ``allow_injected=True`` explicitly. Nothing is published unless the raw
-    matrix audit, the fresh headline audit (real path) and every reducer pass.
+    matrix audit, the fresh headline audit (real path), every reducer and every
+    figure render pass.
     """
 
     deps = deps or CanonicalReportDeps()
     root_path = Path(os.path.abspath(os.fspath(root)))
-    report = build_report_payload(root_path, deps=deps)
+    semantic = build_report_payload(root_path, deps=deps)
+    try:
+        payload, figures = attach_figure_identity(semantic)
+    except FigureError as exc:
+        raise CanonicalReportError(f"figure rendering failed closed: {_bounded(exc)}") from exc
+    payload = validate_canonical_report(payload)
     destination_dir = (
         Path(os.path.abspath(os.fspath(output)))
         if output is not None
         else root_path / "report"
     )
-    status, report_path = _publish_report(destination_dir, report)
+    status, report_path = _publish_report_directory(
+        destination_dir, root_path, payload, figures
+    )
     return CanonicalReportResult(
         output_path=destination_dir,
         report_path=report_path,
         status=status,
-        report=report,
-        report_digest=str(report["report_digest"]),
-        conditions=len(report["conditions"]),
-        aggregates=len(report["metrics"]["aggregates"]),
-        paired_deltas=len(report["metrics"]["paired_deltas"]),
+        report=payload,
+        report_digest=str(payload["report_digest"]),
+        conditions=len(payload["conditions"]),
+        aggregates=len(payload["metrics"]["aggregates"]),
+        paired_deltas=len(payload["metrics"]["paired_deltas"]),
     )
 
 
@@ -2257,11 +2465,11 @@ def verify_canonical_report(
     *,
     deps: CanonicalReportDeps | None = None,
 ) -> CanonicalReportResult:
-    """Read-only revalidation of a published canonical report.
+    """Read-only revalidation of a published canonical report and its figures.
 
-    Recompiles the report from the audited sources and compares the full
-    canonical payload and digest against the on-disk document without mutating
-    any source or the report.
+    Recompiles the semantic report from the audited sources, re-renders every
+    figure and compares the full canonical payload, the figure digests and the
+    exact on-disk SVG bytes without mutating any source or the report.
     """
 
     deps = deps or CanonicalReportDeps()
@@ -2271,21 +2479,23 @@ def verify_canonical_report(
     _require(on_disk_path.is_file(), f"canonical report not found: {on_disk_path}")
     on_disk = validate_canonical_report(_read_json(on_disk_path))
     fresh = build_report_payload(root_path, deps=deps)
+    try:
+        figures = render_figures(fresh)
+    except FigureError as exc:
+        raise CanonicalReportError(f"figure rendering failed closed: {_bounded(exc)}") from exc
+    _verify_published_figures(report_dir, on_disk, figures)
     _require(
-        on_disk.get("report_digest") == fresh.get("report_digest"),
-        "published canonical report digest disagrees with a fresh compilation",
-    )
-    _require(
-        _canonical_bytes(on_disk) == _canonical_bytes(fresh),
+        _canonical_bytes(_semantic_body(on_disk))
+        == _canonical_bytes(_semantic_body(fresh)),
         "published canonical report body disagrees with a fresh compilation",
     )
     return CanonicalReportResult(
         output_path=report_dir,
         report_path=on_disk_path,
         status="verified",
-        report=fresh,
-        report_digest=str(fresh["report_digest"]),
-        conditions=len(fresh["conditions"]),
-        aggregates=len(fresh["metrics"]["aggregates"]),
-        paired_deltas=len(fresh["metrics"]["paired_deltas"]),
+        report=on_disk,
+        report_digest=str(on_disk["report_digest"]),
+        conditions=len(on_disk["conditions"]),
+        aggregates=len(on_disk["metrics"]["aggregates"]),
+        paired_deltas=len(on_disk["metrics"]["paired_deltas"]),
     )

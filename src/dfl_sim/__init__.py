@@ -220,6 +220,7 @@ from .evaluation_config import (
     selection_projection,
     selection_spec_digest,
     study_digest,
+    study_envelope_kind,
     study_identity_payload,
 )
 from .study_placement import (
@@ -507,6 +508,27 @@ from .viewer import (
     select_frame_node,
     select_node,
     step_round,
+)
+from .report import (
+    CANONICAL_REPORT_FILENAME,
+    CANONICAL_REPORT_SCHEMA,
+    CANONICAL_REPORT_SCHEMA_VERSION,
+    CanonicalReportDeps,
+    CanonicalReportError,
+    CanonicalReportResult,
+    build_report_payload,
+    compile_canonical_report,
+    validate_canonical_report,
+    verify_canonical_report,
+)
+from .report_figures import (
+    FIGURE_DIRNAME,
+    FIGURE_SCHEMA,
+    FIGURE_SCHEMA_VERSION,
+    FigureArtifact,
+    FigureError,
+    attach_figure_identity,
+    render_figures,
 )
 
 __version__ = "0.1.0"
@@ -958,4 +980,22 @@ __all__ = [
     "validate_cost_payload",
     "validate_decision_audit_record",
     "validate_measurement_identity",
+    "CANONICAL_REPORT_FILENAME",
+    "CANONICAL_REPORT_SCHEMA",
+    "CANONICAL_REPORT_SCHEMA_VERSION",
+    "CanonicalReportDeps",
+    "CanonicalReportError",
+    "CanonicalReportResult",
+    "build_report_payload",
+    "compile_canonical_report",
+    "validate_canonical_report",
+    "verify_canonical_report",
+    "FIGURE_DIRNAME",
+    "FIGURE_SCHEMA",
+    "FIGURE_SCHEMA_VERSION",
+    "FigureArtifact",
+    "FigureError",
+    "attach_figure_identity",
+    "render_figures",
+    "study_envelope_kind",
 ]

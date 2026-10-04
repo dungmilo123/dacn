@@ -97,6 +97,7 @@ from .evaluation_config import (
     selection_projection,
     selection_spec_digest,
     study_digest,
+    study_envelope_kind,
 )
 from .headline import StageOutcome, SubprocessStageRunner, build_panel
 from .robustness_config import (
@@ -134,6 +135,7 @@ __all__ = [
     "canonical_protocol",
     "derive_calibration_config",
     "expected_condition_counts",
+    "is_robustness_protocol_path",
     "load_robustness_protocol",
     "main",
     "parse_robustness_text",
@@ -303,6 +305,21 @@ def load_robustness_protocol(path: str | os.PathLike[str]) -> RobustnessProtocol
             f"could not read robustness config {source}: {_bounded(exc)}"
         ) from exc
     return parse_robustness_text(text, source=source)
+
+
+def is_robustness_protocol_path(path: str | os.PathLike[str]) -> bool:
+    """Return whether ``path`` is the strict canonical robustness envelope.
+
+    This is a cheap structural sniff used only to route the public CLI to the
+    canonical matrix command. It never validates the protocol (the runner
+    does) and never raises on a missing or unreadable file; a baseline or
+    held-out study spec simply lacks the versioned ``protocol_version`` key.
+    """
+
+    try:
+        return study_envelope_kind(path) == "robustness"
+    except BaselineStudyConfigError:
+        return False
 
 
 def canonical_protocol(
@@ -994,6 +1011,7 @@ def run_robustness_study(
     timeout: float = DEFAULT_STAGE_TIMEOUT,
     deps: RobustnessDeps | None = None,
     resume_from: str | os.PathLike[str] | None = None,
+    progress: Callable[[str, StudyStageOutcome], None] | None = None,
 ) -> MatrixRunResult:
     """Run the bounded real-MNIST robustness matrix end to end.
 
@@ -1151,6 +1169,11 @@ def run_robustness_study(
                     label=condition_id,
                 )
                 stages.append(outcome)
+                if progress is not None:
+                    try:
+                        progress(condition_id, outcome)
+                    except Exception:  # noqa: BLE001 - progress must never fail the run
+                        pass
                 counts = _validate_condition_counts(
                     condition_root, study, label=condition_id
                 )

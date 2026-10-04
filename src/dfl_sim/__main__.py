@@ -13,6 +13,13 @@ The following invocation forms are supported:
   baseline-study command: it runs the strict six-policy paired panel through
   the real policy factory/simulator and atomically publishes one schema-v1
   trace per (policy, seed) cell plus a versioned baseline manifest.
+* ``dfl evaluate CONFIG --output ROOT`` (console script ``dfl``) is the T06
+  canonical robustness command when ``CONFIG`` is the strict robustness source
+  envelope: it runs the bounded matrix, its independent audit, the canonical
+  report compiler and the static SVG figures, and publishes one report
+  directory. ``dfl report ROOT --verify-only`` re-audits the published
+  report and figure digests read-only, while ``dfl report ROOT --output DIR``
+  regenerates the report directory atomically.
 * ``dfl view TRACE_DIR [--port PORT]`` (console script ``dfl``) is the S05
   read-only local replay server: it validates and fully projects the trace
   once, then serves the Dash viewer on ``127.0.0.1`` only.
@@ -62,12 +69,25 @@ from .evaluation_config import (
     HeldOutStudyConfig,
     HeldOutStudyConfigError,
     load_any_study_config,
+    study_envelope_kind,
 )
 from .evaluator import EvaluatorError
 from .models import ModelError
 from .node import TrainingError
 from .policy import BayesianDiagnostic
+from .report import (
+    CanonicalReportDeps,
+    CanonicalReportError,
+    compile_canonical_report,
+    verify_canonical_report,
+)
+from .report_figures import FigureError
 from .reproducibility import DeterminismError
+from .robustness_study import (
+    RobustnessDeps,
+    RobustnessStudyError,
+    run_robustness_study,
+)
 from .round_log import LogError
 from .run import EpisodeError, run_from_config
 from .topology import TopologyError
@@ -78,6 +98,7 @@ __all__ = [
     "build_calibrate_parser",
     "build_evaluate_parser",
     "build_parser",
+    "build_report_parser",
     "build_run_parser",
     "build_view_parser",
     "main",
@@ -111,6 +132,21 @@ HELD_OUT_FINAL_PROGRESS_MARKER = "dfl_sim: final cell "
 #: Stable stdout marker for a published held-out study; it names both manifest
 #: basenames, the output root, panel size, seed counts, and cell counts.
 HELD_OUT_SUCCESS_MARKER = "dfl_sim: held out study "
+
+#: Per-condition progress marker emitted to stderr while the canonical
+#: robustness matrix runs (M003/S05/T06). It carries bounded counters only.
+CANONICAL_PROGRESS_MARKER = "dfl_sim: canonical condition "
+
+#: Stable stdout marker for the one canonical robustness command. It names the
+#: published canonical report, its figure count and the audited coverage; it is
+#: deliberately distinct from the raw T04 matrix marker.
+CANONICAL_EVALUATE_SUCCESS_MARKER = "dfl_sim: canonical study "
+
+#: Stable stdout marker for a read-only canonical report audit.
+REPORT_VERIFY_MARKER = "dfl_sim: canonical report verified "
+
+#: Stable stdout marker for an atomically regenerated canonical report.
+REPORT_REGENERATE_MARKER = "dfl_sim: canonical report regenerated "
 
 # Domain failures that should be reported as a clean CLI error (nonzero exit)
 # rather than an uncaught traceback.
@@ -158,6 +194,16 @@ _EVALUATE_ERRORS = _CLI_ERRORS + (
     # error (nonzero exit, no traceback, no partial publication) rather than
     # escaping as an uncaught exception.
     AblationEvaluationError,
+)
+
+# The bounded canonical robustness failure family: a malformed protocol, a
+# matrix/audit failure, a report/figure fail-closed rejection, or an underlying
+# filesystem error. Every one is reported as one concise stderr line with a
+# nonzero exit and never a stack trace or a partial report directory.
+_CANONICAL_ERRORS = _EVALUATE_ERRORS + (
+    RobustnessStudyError,
+    CanonicalReportError,
+    FigureError,
 )
 
 
@@ -350,6 +396,43 @@ def build_view_parser() -> argparse.ArgumentParser:
         help=(
             "Local TCP port to serve on, 1-65535 "
             f"(default {VIEWER_DEFAULT_PORT})."
+        ),
+    )
+    return parser
+
+
+def build_report_parser() -> argparse.ArgumentParser:
+    """Build the ``dfl report`` parser for the canonical report command."""
+
+    parser = argparse.ArgumentParser(
+        prog="dfl report",
+        description=(
+            "Audit or regenerate the canonical robustness report directory "
+            "(``canonical-report.json`` plus its static SVG figures) from a "
+            "completed, independently audited robustness matrix root."
+        ),
+    )
+    parser.add_argument(
+        "root",
+        metavar="ROOT",
+        help="Completed raw robustness matrix root to audit or re-report.",
+    )
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help=(
+            "Freshly re-audit the matrix, report and figure digests without "
+            "mutating any source or output."
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        metavar="REPORT_DIR",
+        default=None,
+        help=(
+            "Atomically regenerate the canonical report directory into a "
+            "new REPORT_DIR (JSON plus figures/). Incompatible with "
+            "--verify-only."
         ),
     )
     return parser
@@ -617,7 +700,24 @@ def _run_evaluate(
     selection_output: str | None = None,
     resume_from: str | None = None,
 ) -> int:
-    """Dispatch ``dfl evaluate`` to the baseline or held-out study contract."""
+    """Dispatch ``dfl evaluate`` to the canonical, held-out or baseline contract."""
+
+    try:
+        envelope = study_envelope_kind(study_path)
+    except _EVALUATE_ERRORS as exc:
+        print(f"dfl_sim: error: {exc}", file=sys.stderr)
+        return 1
+
+    if envelope == "robustness":
+        if selection_output is not None:
+            print(
+                "dfl_sim: error: --selection-output is not valid for the "
+                "canonical robustness protocol; the canonical matrix runs "
+                "selection and final per condition in one command",
+                file=sys.stderr,
+            )
+            return 1
+        return _run_canonical_evaluate(study_path, output, resume_from)
 
     try:
         spec = load_any_study_config(study_path)
@@ -648,6 +748,133 @@ def _run_evaluate(
         return 1
 
     return _run_baseline_evaluate(spec, output)
+
+
+def _canonical_matrix_deps() -> RobustnessDeps | None:
+    """Production canonical-matrix injection seams (none).
+
+    The public command always runs the real production surface. Tests
+    monkeypatch this provider to return an explicitly injected
+    :class:`RobustnessDeps`, so the fixture seam can never be reached from the
+    real CLI.
+    """
+
+    return None
+
+
+def _canonical_report_deps() -> CanonicalReportDeps | None:
+    """Production canonical-report injection seams (none)."""
+
+    return None
+
+
+def _figure_count(report: object) -> int:
+    """Count the figure entries in a canonical report payload (0 if absent)."""
+
+    if not isinstance(report, dict):
+        return 0
+    block = report.get("figures")
+    if not isinstance(block, dict):
+        return 0
+    entries = block.get("entries")
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        return 0
+    return len(entries)
+
+
+def _canonical_progress(condition_id: str, outcome: object) -> None:
+    """Emit one bounded per-condition progress line to stderr (M003/S05/T06)."""
+
+    print(
+        f"{CANONICAL_PROGRESS_MARKER}condition={condition_id} "
+        f"selection_cells={getattr(outcome, 'selection_cells', 0)} "
+        f"final_cells={getattr(outcome, 'final_cells', 0)} "
+        f"reused={getattr(outcome, 'reused_final_cells', 0)} "
+        f"duration_ms={getattr(outcome, 'duration_ms', 0)}",
+        file=sys.stderr,
+    )
+
+
+def _run_canonical_evaluate(
+    config_path: str, output: str, resume_from: str | None = None
+) -> int:
+    """Run the one canonical robustness command: matrix -> audit -> report -> figures.
+
+    The T04 orchestrator runs the real production matrix and its independent
+    audit; the T05 compiler then re-audits and publishes the canonical report
+    directory with its static figures. No raw matrix marker is ever printed as
+    the final success line.
+    """
+
+    try:
+        matrix = run_robustness_study(
+            config_path,
+            output,
+            deps=_canonical_matrix_deps(),
+            resume_from=resume_from,
+            progress=_canonical_progress,
+        )
+        report_result = compile_canonical_report(
+            str(matrix.output_path), None, deps=_canonical_report_deps()
+        )
+    except _CANONICAL_ERRORS as exc:
+        print(f"dfl_sim: error: {exc}", file=sys.stderr)
+        return 1
+
+    report = report_result.report
+    scope = report.get("scope") if isinstance(report, dict) else None
+    scope = scope if isinstance(scope, dict) else {}
+    print(
+        f"{CANONICAL_EVALUATE_SUCCESS_MARKER}"
+        f"report={report_result.report_path} "
+        f"figures={_figure_count(report)} "
+        f"conditions={report_result.conditions} "
+        f"final_cells={scope.get('matrix_final_cells')} "
+        f"aggregates={report_result.aggregates} "
+        f"provenance={report.get('data_provenance') if isinstance(report, dict) else None}"
+    )
+    return 0
+
+
+def _run_report(root: str, verify_only: bool, output: str | None) -> int:
+    """Audit or regenerate the canonical report directory for ``root``."""
+
+    if verify_only and output is not None:
+        print(
+            "dfl_sim: error: --verify-only and --output are mutually "
+            "exclusive",
+            file=sys.stderr,
+        )
+        return 2
+    if not verify_only and output is None:
+        print(
+            "dfl_sim: error: specify --verify-only or --output REPORT_DIR",
+            file=sys.stderr,
+        )
+        return 2
+
+    deps = _canonical_report_deps()
+    try:
+        if verify_only:
+            result = verify_canonical_report(root, deps=deps)
+            print(
+                f"{REPORT_VERIFY_MARKER}report={result.report_path} "
+                f"figures={_figure_count(result.report)} "
+                f"conditions={result.conditions} "
+                f"aggregates={result.aggregates}"
+            )
+        else:
+            result = compile_canonical_report(root, output, deps=deps)
+            print(
+                f"{REPORT_REGENERATE_MARKER}report={result.report_path} "
+                f"figures={_figure_count(result.report)} "
+                f"conditions={result.conditions} "
+                f"aggregates={result.aggregates}"
+            )
+    except _CANONICAL_ERRORS as exc:
+        print(f"dfl_sim: error: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _run_view(trace_dir: str, port: int) -> int:
@@ -720,6 +947,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         view_parser = build_view_parser()
         view_args = view_parser.parse_args(args_list[1:])
         return _run_view(view_args.trace_dir, view_args.port)
+
+    if args_list and args_list[0] == "report":
+        report_parser = build_report_parser()
+        report_args = report_parser.parse_args(args_list[1:])
+        return _run_report(
+            report_args.root, report_args.verify_only, report_args.output
+        )
 
     parser = build_parser()
     args = parser.parse_args(args_list)

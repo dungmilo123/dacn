@@ -110,6 +110,7 @@ __all__ = [
     "selection_projection",
     "selection_spec_digest",
     "study_digest",
+    "study_envelope_kind",
     "study_identity_payload",
 ]
 
@@ -1112,6 +1113,29 @@ def load_held_out_study_config(
     except BaselineStudyConfigError as exc:
         raise HeldOutStudyConfigError(str(exc)) from None
     return parse_held_out_study_text(text, source=str(path))
+
+
+#: The strict canonical robustness source-envelope version literal. The
+#: robustness matrix protocol declares this at its root, so the public CLI can
+#: route it to the canonical matrix command without validating it first.
+ROBUSTNESS_PROTOCOL_SOURCE_VERSION = "dfl_sim.robustness_protocol/v1"
+
+
+def study_envelope_kind(path: str | os.PathLike[str]) -> str:
+    """Classify a study-source file as ``"robustness"`` or ``"study"``.
+
+    This is a cheap, non-validating structural sniff: the strict canonical
+    robustness envelope declares the versioned ``protocol_version`` key, while
+    a baseline/held-out study spec does not. It reads and parses the file once
+    and raises :class:`BaselineStudyConfigError` on an unreadable or malformed
+    source, so the public CLI can report one bounded error before any work.
+    """
+
+    text = _read_config_text(path)
+    raw = _parse_mapping(text, source=str(path))
+    if raw.get("protocol_version") == ROBUSTNESS_PROTOCOL_SOURCE_VERSION:
+        return "robustness"
+    return "study"
 
 
 def load_any_study_config(
