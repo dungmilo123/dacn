@@ -1,0 +1,102 @@
+# Canonical real-MNIST robustness matrix source protocol (M003/S05, D040).
+#
+#   .venv/bin/python -m dfl_sim.robustness_study configs/robustness_mnist.yaml \
+#       --output runs/m003-canonical-robustness
+#
+# This is the frozen *source* envelope for the bounded nine-condition matrix:
+# three Dirichlet class-heterogeneity alphas (0.1, 0.5, 1.0) crossed with
+# three seed-derived Watts-Strogatz degree placements (low, mid, high). It
+# declares the scientific dimensions explicitly so the matrix is
+# self-describing; for `data_provenance: real_mnist` every dimension is
+# cross-checked against the frozen T02 constants at load time, so editing this
+# file cannot silently weaken the canonical matrix.
+#
+# The runner independently reverifies the separate IID headline root
+# (`runs/m003-mnist-headline`), leases/deep-verifies the content-digested MNIST
+# cache, derives one matched full/no-belief/no-strategic calibration triple per
+# alpha, freezes and runs the nine conditions with opt-in cost/decision
+# telemetry, and publishes a raw, independently audited matrix manifest. It
+# never compiles the canonical report (T05/T06 own that).
+#
+# `calibrate_robustness_mnist.yaml` is the shared source calibration template;
+# the runner substitutes only the per-alpha data alpha, keeping the data mode,
+# quota, model, features, action space, bins and budget matched within an alpha.
+
+protocol_version: dfl_sim.robustness_protocol/v1
+study_id: m003-canonical-robustness
+data_provenance: real_mnist
+
+# --- Explicit source roots ------------------------------------------------- #
+# Relative paths resolve against the repository root; the output root must not
+# alias, contain, or be contained by either declared source root.
+headline_source_root: runs/m003-mnist-headline
+data_root: data
+
+# --- Single-worker CPU execution (thread-capped per D009) ------------------ #
+threads: 1
+
+# --- Frozen matrix dimensions --------------------------------------------- #
+alphas: [0.1, 0.5, 1.0]
+placements: [low, mid, high]
+
+topology_kind: watts_strogatz
+topology_n: 10
+topology_k: 2
+topology_p: 0.3
+
+# --- Frozen base resource envelope ---------------------------------------- #
+rounds: 6
+samples_per_node: 64
+evaluation_max_samples: 128
+evaluation_batch_size: 32
+
+# --- Singleton candidate budget (no final-driven tuning) ------------------ #
+candidate_budget: 1
+selection_seed: 1101
+selection_provenance: singleton-candidate-frozen-before-final
+
+# --- Frozen paired seed split (disjoint from the calibration seed) --------- #
+selection_seeds: [1101, 1102]
+final_seeds: [2101, 2102, 2103]
+calibration_seed: 20240101
+
+# --- Known schedules: collectively realize zero/weak/strong over 6 rounds -- #
+known_schedules:
+  - id: duty_cycle
+    schedule:
+      kind: duty_cycle
+      on_rounds: 3
+      off_rounds: 2
+      intensity: strong
+  - id: periodic
+    schedule:
+      kind: periodic
+      period: 6
+      strong_rounds: 2
+      weak_rounds: 2
+  - id: delayed_onset
+    schedule:
+      kind: delayed_onset
+      onset_round: 2
+      intensity: strong
+  - id: random
+    schedule:
+      kind: random
+      p_on: 0.5
+      intensity: weak
+
+# Reserved final-only non-stationary pattern, structurally distinct from every
+# known schedule.
+held_out_schedule:
+  id: held_out
+  schedule:
+    kind: held_out
+
+# --- Shared per-alpha calibration template -------------------------------- #
+calibration:
+  config: configs/calibrate_robustness_mnist.yaml
+  seed: 20240101
+  episodes: 32
+  design_split_size: 16
+  p0: 0.5
+  mu_a: [0.0, 2.0, 5.0]

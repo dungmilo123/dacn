@@ -1,0 +1,96 @@
+# Shared source calibration template for the M003/S05 canonical robustness
+# matrix. The matrix runner substitutes only the per-alpha Dirichlet alpha into
+# the embedded experiment's data block, so the data mode, quota, model,
+# features, action space, bins and budget stay matched within each alpha.
+#
+# For every alpha in configs/robustness_mnist.yaml the runner derives
+# `generated-configs/calibrate-<alpha>.yaml` and dispatches the same file for
+# all three variants:
+#
+#   dfl_sim calibrate <generated> --output <root>/calibration/<alpha>/full \
+#       --variant full
+#   dfl_sim calibrate <generated> --output <root>/calibration/<alpha>/no_belief \
+#       --variant no_belief
+#   dfl_sim calibrate <generated> --output <root>/calibration/<alpha>/no_strategic \
+#       --variant no_strategic
+#
+# The embedded reference experiment shares the canonical matrix's data mode
+# (Dirichlet class-heterogeneity), exact local quota (10 nodes x 64 samples),
+# model (CPU bitwise SmallCNN), features/action space/bins and sampler budget;
+# it is deliberately one round so the calibration budget is bounded. The
+# Watt-Strogatz family (n=10, k=2, p=0.3) matches the matrix topology. The seed
+# is pinned and separate from the selection seeds (1101, 1102) and final seeds
+# (2101, 2102, 2103). `download` stays false because the runner leases an
+# already verified cache and never falls back to injected tensors.
+
+experiment:
+  seed: 20240101
+  rounds: 1
+  device: cpu
+  bitwise: true
+
+  model:
+    name: small_cnn
+
+  data:
+    dataset: mnist
+    partition: dirichlet
+    dirichlet_alpha: 0.1
+    samples_per_node: 64
+    data_root: data
+    download: false
+
+  training:
+    optimizer: sgd
+    learning_rate: 0.05
+    batch_size: 32
+    local_epochs: 1
+    num_workers: 0
+
+  topology:
+    kind: watts_strogatz
+    n: 10
+    k: 2
+    p: 0.3
+
+  aggregation:
+    kind: plain_average
+
+  evaluation:
+    max_samples: 128
+    batch_size: 32
+
+  trace:
+    snapshot_cadence: 1
+
+# --- Calibration sampler / estimator envelope ----------------------------- #
+episodes: 32
+p0: 0.5
+mu_a: [0.0, 2.0, 5.0]
+max_compromised: 1
+smoothing_alpha: 1.0
+design_split_size: 16
+
+bins:
+  disagreement:
+    edges: [0.25, 0.5, 0.75, 1.0]
+    labels: ["vlo", "lo", "mid", "hi", "vhi"]
+  relative_norm:
+    edges: [0.5, 1.0, 2.0]
+    labels: ["tiny", "small", "large", "huge"]
+  loss_delta:
+    edges: [-0.05, 0.0, 0.05]
+    labels: ["drop", "flatneg", "flatpos", "rise"]
+  degree:
+    labels: ["1", "2", "3-4", "5+"]
+  progress:
+    labels: ["early", "mid", "late"]
+
+action_space:
+  multiplier_set: [0.0, 0.5, 1.0]
+  self_multiplier: 1.0
+  omega: 0.5
+  degree_cap: 4
+  tie_tolerance: 1.0e-09
+  ordering: "fewer_rejected_then_lexicographic"
+  pruning: "directional_disagreement_desc_sender_id_asc"
