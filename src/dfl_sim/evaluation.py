@@ -81,6 +81,7 @@ __all__ = [
     "BaselineStudyResult",
     "EvaluationError",
     "FinalResult",
+    "HeldOutStudyResult",
     "SelectionCell",
     "SelectionResult",
     "build_cell_config",
@@ -89,6 +90,7 @@ __all__ = [
     "load_study_config",
     "run_baseline_study",
     "run_final_phase",
+    "run_held_out_study",
     "run_selection_phase",
     "selection_output_digest",
     "validate_shared_inputs",
@@ -123,6 +125,9 @@ _SELECTION_STAGING_PREFIX = ".selection.staging-"
 #: Private staging prefix for the final-phase output.
 _FINAL_STAGING_PREFIX = ".final.staging-"
 
+#: Private staging prefix for the whole two-phase held-out study root.
+_HELD_OUT_STAGING_PREFIX = ".held_out_study.staging-"
+
 #: Canonical panel ordering used for deterministic manifest entry order.
 _POLICY_ORDER: dict[str, int] = {
     policy_id: index for index, policy_id in enumerate(REQUIRED_POLICY_IDS)
@@ -137,8 +142,13 @@ ProgressHook = Callable[[int, str], None]
 #: Trace validation seam (defaults to the production strict reader).
 TraceValidator = Callable[[str | os.PathLike], object]
 
-#: Optional per-cell selection progress hook: ``(seed, schedule_id, policy_id)``.
+#: Optional per-cell selection/final progress hook:
+#: ``(seed, schedule_id, policy_id)``.
 SelectionProgressHook = Callable[[int, str, str], None]
+
+#: Optional two-phase progress hook: ``(phase, seed, schedule_id, policy_id)``
+#: where ``phase`` is ``"selection"`` or ``"final"``.
+HeldOutProgressHook = Callable[[str, int, str, str], None]
 
 
 class EvaluationError(RuntimeError):
@@ -213,6 +223,46 @@ class FinalResult:
     manifest_path: Path
     manifest: Mapping[str, object]
     cells: tuple[SelectionCell, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class HeldOutStudyResult:
+    """Immutable outcome of a completed two-phase held-out study publication.
+
+    The study root at :attr:`output_path` holds the frozen selection output
+    under ``selection/`` and the final output under ``final/``; the two
+    wrapped phase results carry their re-keyed absolute trace paths so callers
+    never observe the (removed) private staging location.
+    """
+
+    spec: HeldOutStudyConfig
+    output_path: Path
+    selection_result: SelectionResult
+    final_result: FinalResult
+
+    @property
+    def selection_path(self) -> Path:
+        """The published ``selection/`` directory."""
+
+        return self.selection_result.output_path
+
+    @property
+    def final_path(self) -> Path:
+        """The published ``final/`` directory."""
+
+        return self.final_result.output_path
+
+    @property
+    def selection_manifest_path(self) -> Path:
+        """The frozen selection manifest path."""
+
+        return self.selection_result.manifest_path
+
+    @property
+    def final_manifest_path(self) -> Path:
+        """The final manifest path."""
+
+        return self.final_result.manifest_path
 
 
 # --------------------------------------------------------------------------- #
@@ -1424,4 +1474,185 @@ def run_final_phase(
         manifest_path=destination / FINAL_MANIFEST_FILENAME,
         manifest=manifest,
         cells=final_cells,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Two-phase held-out study orchestrator (M003/S02/T05)
+# --------------------------------------------------------------------------- #
+def _rekey_selection_result(
+    result: SelectionResult, output_path: Path
+) -> SelectionResult:
+    """Re-point a published selection result at a new (renamed) output root."""
+
+    cells = tuple(
+        SelectionCell(
+            seed=cell.seed,
+            policy_id=cell.policy_id,
+            schedule_id=cell.schedule_id,
+            trace_path=output_path / cell.relative_trace_path,
+            relative_trace_path=cell.relative_trace_path,
+            manifest_entry=cell.manifest_entry,
+            realized_kappa_sequence=cell.realized_kappa_sequence,
+        )
+        for cell in result.cells
+    )
+    return SelectionResult(
+        selection=result.selection,
+        output_path=output_path,
+        manifest_path=output_path / SELECTION_MANIFEST_FILENAME,
+        manifest=result.manifest,
+        cells=cells,
+    )
+
+
+def _rekey_final_result(
+    result: FinalResult, *, selection_output_path: Path, output_path: Path
+) -> FinalResult:
+    """Re-point a published final result at its renamed roots."""
+
+    cells = tuple(
+        SelectionCell(
+            seed=cell.seed,
+            policy_id=cell.policy_id,
+            schedule_id=cell.schedule_id,
+            trace_path=output_path / cell.relative_trace_path,
+            relative_trace_path=cell.relative_trace_path,
+            manifest_entry=cell.manifest_entry,
+            realized_kappa_sequence=cell.realized_kappa_sequence,
+        )
+        for cell in result.cells
+    )
+    return FinalResult(
+        study=result.study,
+        selection_output_path=selection_output_path,
+        output_path=output_path,
+        manifest_path=output_path / FINAL_MANIFEST_FILENAME,
+        manifest=result.manifest,
+        cells=cells,
+    )
+
+
+def _phase_progress(
+    progress: HeldOutProgressHook | None, phase: str
+) -> SelectionProgressHook | None:
+    """Adapt the two-phase hook to one phase's ``(seed, schedule, policy)``."""
+
+    if progress is None:
+        return None
+
+    def _hook(seed: int, schedule_id: str, policy_id: str) -> None:
+        progress(phase, int(seed), schedule_id, policy_id)
+
+    return _hook
+
+
+def run_held_out_study(
+    spec: HeldOutStudyConfig,
+    output: str | os.PathLike[str],
+    *,
+    dataset: Dataset | None = None,
+    dataset_loader: DatasetLoader | None = None,
+    evaluation_dataset: Dataset | None = None,
+    evaluation_dataset_loader: DatasetLoader | None = None,
+    progress: HeldOutProgressHook | None = None,
+    trace_validator: TraceValidator | None = None,
+) -> HeldOutStudyResult:
+    """Run the full selection -> freeze -> final held-out study in one call.
+
+    A private same-parent staging directory is created, the selection phase is
+    run into ``staging/selection`` and its frozen manifest fsynced, the final
+    phase then reads that on-disk frozen output and publishes into
+    ``staging/final``, and finally the whole staging directory is atomically
+    renamed into ``output``. The published study root therefore holds
+    ``selection/selection-manifest.json`` and ``final/final-manifest.json``
+    plus their traces.
+
+    This is the only entry point that runs both phases; the phase runners
+    themselves never see the final seeds during selection (the selection runner
+    accepts only a :class:`SelectionSpec`), and the final runner re-asserts the
+    split and the frozen selection digest before running.
+
+    ``progress`` receives ``(phase, seed, schedule_id, policy_id)`` before each
+    cell runs, where ``phase`` is ``"selection"`` or ``"final"``. Any failure
+    removes the staging directory, publishes nothing, and re-raises the
+    already-wrapped :class:`EvaluationError`.
+    """
+
+    if not isinstance(spec, HeldOutStudyConfig):
+        raise EvaluationError(
+            "run_held_out_study requires a HeldOutStudyConfig, got "
+            f"{type(spec).__name__}"
+        )
+    study = spec.study
+    destination = _validate_output_destination(output)
+    _resolve_data_sources(
+        study,
+        dataset=dataset,
+        dataset_loader=dataset_loader,
+        evaluation_dataset=evaluation_dataset,
+        evaluation_dataset_loader=evaluation_dataset_loader,
+    )
+    validator = TraceReader if trace_validator is None else trace_validator
+
+    staging: Path | None = None
+    published = False
+    try:
+        staging, _staging_root = _prepare_staging(
+            destination, prefix=_HELD_OUT_STAGING_PREFIX
+        )
+        selection_output = staging / "selection"
+        selection_result = run_selection_phase(
+            selection_projection(spec),
+            selection_output,
+            dataset=dataset,
+            dataset_loader=dataset_loader,
+            evaluation_dataset=evaluation_dataset,
+            evaluation_dataset_loader=evaluation_dataset_loader,
+            progress=_phase_progress(progress, "selection"),
+            trace_validator=validator,
+        )
+        # Durably commit the frozen selection output before the final phase
+        # reads it back from disk.
+        _fsync_dir(selection_output)
+
+        final_output = staging / "final"
+        final_result = run_final_phase(
+            spec,
+            selection_output,
+            final_output,
+            dataset=dataset,
+            dataset_loader=dataset_loader,
+            evaluation_dataset=evaluation_dataset,
+            evaluation_dataset_loader=evaluation_dataset_loader,
+            progress=_phase_progress(progress, "final"),
+            trace_validator=validator,
+        )
+        _fsync_dir(final_output)
+        _fsync_dir(staging)
+        try:
+            os.rename(staging, destination)
+        except OSError as exc:
+            raise EvaluationError(
+                f"could not publish study output {destination}: {exc}"
+            ) from exc
+        _fsync_dir(destination.parent)
+        published = True
+    finally:
+        if not published and staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
+
+    selection_path = destination / "selection"
+    final_path = destination / "final"
+    return HeldOutStudyResult(
+        spec=spec,
+        output_path=destination,
+        selection_result=_rekey_selection_result(
+            selection_result, selection_path
+        ),
+        final_result=_rekey_final_result(
+            final_result,
+            selection_output_path=selection_path,
+            output_path=final_path,
+        ),
     )

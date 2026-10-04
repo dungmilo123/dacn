@@ -18,6 +18,10 @@ uv run dfl run configs/clean_3node.yaml --output runs/clean
 # plus a versioned baseline manifest.
 uv run dfl evaluate STUDY.yaml --output runs/baseline_study
 
+# S02 held-out adaptive study: selection -> freeze -> disjoint final seeds
+# (including the reserved unseen schedule) in one atomic command.
+uv run dfl evaluate HELD_OUT.yaml --output runs/held_out_study
+
 # S05 read-only replay viewer for a completed trace (localhost only).
 uv run dfl view runs/clean --port 8050
 
@@ -220,6 +224,79 @@ emitted trace can be replayed with the read-only viewer:
 
 ```bash
 uv run dfl view runs/baseline_study/traces/balance/seed-11
+```
+
+### Held-out adaptive study (same command, held-out spec)
+
+`dfl evaluate` accepts two strict spec kinds from one loader and dispatches on
+shape. A baseline spec keeps the S01 behavior exactly; a held-out spec runs the
+full **selection -> freeze -> final** study in one atomic command:
+
+```bash
+uv run dfl evaluate HELD_OUT.yaml --output runs/held_out_study
+# runs/held_out_study/selection/selection-manifest.json
+# runs/held_out_study/final/final-manifest.json
+```
+
+A held-out spec composes the baseline study as a nested `study` block (its
+`seeds` are the *selection* seeds) and adds three fields:
+
+```yaml
+study: {study_id: held_out_v1, data_provenance: real_mnist, base: {...},
+        seeds: [11, 12], candidate_budget: 3, selection_seed: 7,
+        selection_provenance: selection-seed-budget, panel: [...]}
+final_seeds: [21]                 # disjoint from study.seeds
+known_schedules:                  # adaptive schedules selection may build
+  - {id: periodic_known, schedule: {kind: periodic}}
+held_out_schedule:                # reserved, unseen; only final builds it
+  {id: held_out_schedule, schedule: {kind: held_out}}
+```
+
+The nested `study` (including the six-policy panel and matched-budget rules) is
+exactly the S01 baseline contract.
+
+**Split and no-leak semantics.** The selection runner is typed to accept only a
+`SelectionSpec`, a projection that structurally carries no `final_seeds` or
+`held_out_schedule`, so final seeds and the reserved schedule are unreachable
+during selection. The frozen `selection/selection-manifest.json` records the
+`selection_spec_digest` and `status: frozen`. The final runner re-asserts the
+disjoint split, refuses a missing/incomplete/non-frozen selection output, and
+fails closed -- naming only the bounded digests -- when the selection-side spec
+was mutated after freezing.
+
+**Adaptive schedule provenance.** Every schedule is a pure per-round kappa map
+keyed by a domain-separated stable seed, so a cell's realized attack is
+identical across the six policies and reproducible across processes. Each
+selection/final manifest entry records the `schedule`, its `schedule_digest`,
+and the exact `realized_kappa_sequence` each policy realized through the
+unchanged `OutgoingController` seam; `held_out: true` marks entries from the
+reserved unseen schedule.
+
+**Success marker.** stdout carries exactly one bounded marker naming both
+manifests, the output root, the panel size, the seed counts, and the cell
+counts (`dfl_sim: held out study selection_manifest=... final_manifest=...
+output=... policies=6 selection_seeds=2 final_seeds=1 selection_cells=12
+final_cells=12`); per-cell selection/final progress lines go to stderr and
+contain only the bounded policy id, seed, and schedule id. Any failure removes
+the private staging directory and publishes nothing.
+
+**Final-only replay.** To rerun only the final phase against an existing frozen
+selection output:
+
+```bash
+uv run dfl evaluate HELD_OUT.yaml --output runs/held_out_final \
+  --selection-output runs/held_out_study/selection
+```
+
+`--selection-output` is rejected for a baseline spec. `--output` then receives
+`final-manifest.json` directly instead of a two-phase study root.
+
+**Inspecting an emitted trace.** Selection and final cells are normal
+schema-v1 traces, so any can be replayed:
+
+```bash
+uv run dfl view runs/held_out_study/selection/traces/periodic_known/balance/seed-11
+uv run dfl view runs/held_out_study/final/traces/held_out_schedule/balance/seed-21
 ```
 
 ## Testing

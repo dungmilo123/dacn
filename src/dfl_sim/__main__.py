@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from . import __version__
 from .aggregation import AggregationError
@@ -41,7 +42,21 @@ from .calibration_estimator import CalibrationEstimationError
 from .calibration_scoring import CalibrationScoringError
 from .config import BayesianAggregation, ConfigError, load_config
 from .data import DataError
-from .evaluation import EvaluationError, run_baseline_study
+from .evaluation import (
+    SELECTION_MANIFEST_FILENAME,
+    EvaluationError,
+    run_baseline_study,
+    run_final_phase,
+    run_held_out_study,
+)
+from .evaluation_config import (
+    REQUIRED_POLICY_IDS,
+    BaselineStudyConfig,
+    BaselineStudyConfigError,
+    HeldOutStudyConfig,
+    HeldOutStudyConfigError,
+    load_any_study_config,
+)
 from .evaluator import EvaluatorError
 from .models import ModelError
 from .node import TrainingError
@@ -80,6 +95,17 @@ EVALUATE_PROGRESS_MARKER = "dfl_sim: evaluate cell "
 #: and output directory so the command's one success line is unambiguous.
 EVALUATE_SUCCESS_MARKER = "dfl_sim: baseline study "
 
+#: Per-cell selection-phase progress marker emitted to stderr (M003/S02).
+#: It carries only the bounded policy id, seed, and schedule id.
+HELD_OUT_SELECTION_PROGRESS_MARKER = "dfl_sim: selection cell "
+
+#: Per-cell final-phase progress marker emitted to stderr (M003/S02).
+HELD_OUT_FINAL_PROGRESS_MARKER = "dfl_sim: final cell "
+
+#: Stable stdout marker for a published held-out study; it names both manifest
+#: basenames, the output root, panel size, seed counts, and cell counts.
+HELD_OUT_SUCCESS_MARKER = "dfl_sim: held out study "
+
 # Domain failures that should be reported as a clean CLI error (nonzero exit)
 # rather than an uncaught traceback.
 _CLI_ERRORS = (
@@ -114,8 +140,14 @@ _CALIBRATION_ERRORS = _CLI_ERRORS + (
 # non-publishing safety rejection, or any per-cell simulation/artifact/trace
 # failure the runner already wrapped with its policy id and seed. Each is
 # reported as a concise stderr line with a nonzero exit and never a stack trace
-# or a partial/success manifest.
-_EVALUATE_ERRORS = _CLI_ERRORS + (EvaluationError,)
+# or a partial/success manifest. The held-out spec errors are subclasses of
+# ConfigError but are listed explicitly so the bounded family mirrors the
+# held-out contract.
+_EVALUATE_ERRORS = _CLI_ERRORS + (
+    EvaluationError,
+    BaselineStudyConfigError,
+    HeldOutStudyConfigError,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -245,6 +277,17 @@ def build_evaluate_parser() -> argparse.ArgumentParser:
             "Destination directory for the study. Must not exist and must "
             "not alias the study spec; published atomically after every cell "
             "and every trace validates."
+        ),
+    )
+    parser.add_argument(
+        "--selection-output",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Run only the final phase against a previously frozen selection "
+            "output directory (held-out study specs only). --output then "
+            "receives final-manifest.json directly instead of a two-phase "
+            "study root."
         ),
     )
     return parser
@@ -388,8 +431,8 @@ def _run_calibrate(config_path: str, output: str) -> int:
     return 0
 
 
-def _run_evaluate(study_path: str, output: str) -> int:
-    """Run the paired baseline study and publish its manifest atomically."""
+def _run_baseline_evaluate(spec: BaselineStudyConfig, output: str) -> int:
+    """Run the S01 paired baseline study (unchanged success surface)."""
 
     def _progress(seed: int, policy_id: str) -> None:
         # Progress is bounded (policy id + seed only) and goes to stderr so
@@ -401,7 +444,7 @@ def _run_evaluate(study_path: str, output: str) -> int:
         )
 
     try:
-        result = run_baseline_study(study_path, output, progress=_progress)
+        result = run_baseline_study(spec, output, progress=_progress)
     except _EVALUATE_ERRORS as exc:
         print(f"dfl_sim: error: {exc}", file=sys.stderr)
         return 1
@@ -415,6 +458,131 @@ def _run_evaluate(study_path: str, output: str) -> int:
         f"cells={len(result.cells)}"
     )
     return 0
+
+
+def _held_out_progress(
+    phase: str, seed: int, schedule_id: str, policy_id: str
+) -> None:
+    """Emit one bounded per-cell held-out progress line to stderr."""
+
+    marker = (
+        HELD_OUT_SELECTION_PROGRESS_MARKER
+        if phase == "selection"
+        else HELD_OUT_FINAL_PROGRESS_MARKER
+    )
+    print(
+        f"{marker}policy={policy_id} seed={int(seed)} "
+        f"schedule={schedule_id}",
+        file=sys.stderr,
+    )
+
+
+def _held_out_success_marker(
+    spec: HeldOutStudyConfig,
+    *,
+    selection_manifest: Path,
+    final_manifest: Path,
+    output: Path,
+    selection_cells: int,
+    final_cells: int,
+) -> str:
+    """Build the one bounded held-out success line."""
+
+    return (
+        f"{HELD_OUT_SUCCESS_MARKER}"
+        f"selection_manifest={selection_manifest} "
+        f"final_manifest={final_manifest} "
+        f"output={output} "
+        f"policies={len(REQUIRED_POLICY_IDS)} "
+        f"selection_seeds={len(spec.study.seeds)} "
+        f"final_seeds={len(spec.final_seeds)} "
+        f"selection_cells={selection_cells} "
+        f"final_cells={final_cells}"
+    )
+
+
+def _run_held_out_evaluate(
+    spec: HeldOutStudyConfig, output: str, selection_output: str | None
+) -> int:
+    """Run the held-out study (full two-phase, or final-only with a freeze)."""
+
+    if selection_output is not None:
+        # Final-only: read an existing frozen selection output and publish
+        # final-manifest.json directly into ``output``.
+        try:
+            result = run_final_phase(
+                spec,
+                selection_output,
+                output,
+                progress=lambda seed, schedule_id, policy_id: _held_out_progress(
+                    "final", seed, schedule_id, policy_id
+                ),
+            )
+        except _EVALUATE_ERRORS as exc:
+            print(f"dfl_sim: error: {exc}", file=sys.stderr)
+            return 1
+        selection_cells = (
+            len(spec.study.seeds)
+            * len(spec.known_schedules)
+            * len(REQUIRED_POLICY_IDS)
+        )
+        marker = _held_out_success_marker(
+            spec,
+            selection_manifest=(
+                Path(selection_output) / SELECTION_MANIFEST_FILENAME
+            ),
+            final_manifest=result.manifest_path,
+            output=result.output_path,
+            selection_cells=selection_cells,
+            final_cells=len(result.cells),
+        )
+        print(marker)
+        return 0
+
+    try:
+        study_result = run_held_out_study(
+            spec, output, progress=_held_out_progress
+        )
+    except _EVALUATE_ERRORS as exc:
+        print(f"dfl_sim: error: {exc}", file=sys.stderr)
+        return 1
+
+    marker = _held_out_success_marker(
+        spec,
+        selection_manifest=study_result.selection_manifest_path,
+        final_manifest=study_result.final_manifest_path,
+        output=study_result.output_path,
+        selection_cells=len(study_result.selection_result.cells),
+        final_cells=len(study_result.final_result.cells),
+    )
+    print(marker)
+    return 0
+
+
+def _run_evaluate(
+    study_path: str, output: str, selection_output: str | None = None
+) -> int:
+    """Dispatch ``dfl evaluate`` to the baseline or held-out study contract."""
+
+    try:
+        spec = load_any_study_config(study_path)
+    except _EVALUATE_ERRORS as exc:
+        print(f"dfl_sim: error: {exc}", file=sys.stderr)
+        return 1
+
+    if isinstance(spec, HeldOutStudyConfig):
+        return _run_held_out_evaluate(spec, output, selection_output)
+
+    if selection_output is not None:
+        print(
+            "dfl_sim: error: --selection-output is only valid for a "
+            "held-out study spec; a baseline study runs selection and final "
+            "in one command",
+            file=sys.stderr,
+        )
+        return 1
+
+    return _run_baseline_evaluate(spec, output)
 
 
 def _run_view(trace_dir: str, port: int) -> int:
@@ -474,7 +642,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args_list and args_list[0] == "evaluate":
         evaluate_parser = build_evaluate_parser()
         evaluate_args = evaluate_parser.parse_args(args_list[1:])
-        return _run_evaluate(evaluate_args.study, evaluate_args.output)
+        return _run_evaluate(
+            evaluate_args.study,
+            evaluate_args.output,
+            evaluate_args.selection_output,
+        )
 
     if args_list and args_list[0] == "view":
         view_parser = build_view_parser()
