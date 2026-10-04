@@ -222,7 +222,6 @@ def _final_manifest(spec, *, drop_last: bool = False) -> dict:
 
 class _FakeStageRunner:
     """Injected stand-in for the two production subprocess stages."""
-
     def __init__(self, *, fail_on: str | None = None, drop_last_cell: bool = False):
         self.fail_on = fail_on
         self.drop_last_cell = drop_last_cell
@@ -260,6 +259,25 @@ class _FakeStageRunner:
         return StageOutcome("evaluate", 0, 0, "", "")
 
 
+def _noop_verify(_root: str) -> None:
+    """Injected stand-in for the independent audit; records nothing."""
+
+    return None
+
+
+class _RecordingVerify:
+    """Injected audit seam that records the audited root and any failure."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.calls: list[str] = []
+        self._fail = fail
+
+    def __call__(self, root: str) -> None:
+        self.calls.append(root)
+        if self._fail:
+            raise RuntimeError("injected audit failure")
+
+
 def _deps(
     stage_runner: _FakeStageRunner,
     *,
@@ -268,6 +286,7 @@ def _deps(
     load_artifact=_fake_artifact,
     preflight=lambda study: None,
     summarize=_fake_summarize,
+    verify=_noop_verify,
 ) -> HeadlineDeps:
     recorder = recorder or _ProvisionRecorder()
     return HeadlineDeps(
@@ -276,6 +295,7 @@ def _deps(
         load_artifact=load_artifact,
         preflight=preflight,
         summarize=summarize,
+        verify=verify,
         stage_runner=stage_runner,
         repo_root=REPO_ROOT,
     )
@@ -542,6 +562,40 @@ def test_run_headline_happy_path(tmp_path):
     assert spec.study.policy_ids() == EXTENDED_POLICY_IDS
     assert tuple(spec.study.seeds) == SELECTION_SEEDS
     assert tuple(spec.final_seeds) == FINAL_SEEDS
+
+
+def test_run_headline_invokes_audit_after_evaluate(tmp_path):
+    recorder = _RecordingVerify()
+    runner = _FakeStageRunner()
+    output = tmp_path / "headline"
+    result = run_headline(
+        HEADLINE_CONFIG,
+        output,
+        data_root=tmp_path / "cache",
+        deps=_deps(runner, verify=recorder),
+    )
+    # The audit runs exactly once, after the evaluate stage published the study.
+    assert recorder.calls == [str(output)]
+    assert (output / "study" / "final" / "final-manifest.json").is_file()
+    # The stub does not write evidence, so the result records none.
+    assert result.evidence_path is None
+
+
+def test_run_headline_audit_failure_blocks_success(tmp_path):
+    output = tmp_path / "headline"
+    recorder = _RecordingVerify(fail=True)
+    with pytest.raises(HeadlineError) as info:
+        run_headline(
+            HEADLINE_CONFIG,
+            output,
+            data_root=tmp_path / "cache",
+            deps=_deps(_FakeStageRunner(), verify=recorder),
+        )
+    assert "independent headline audit failed closed" in str(info.value)
+    assert recorder.calls == [str(output)]
+    # The raw study survives for diagnosis but no acceptance marker is written.
+    assert (output / "study" / "robustness-summary.json").is_file()
+    assert not (output / "headline-evidence.json").exists()
 
 
 def test_run_headline_no_download_after_provisioning(tmp_path):

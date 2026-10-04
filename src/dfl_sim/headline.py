@@ -910,6 +910,7 @@ class HeadlineDeps:
     load_artifact: Callable[..., object] | None = None
     preflight: Callable[..., AblationMatchSummary] | None = None
     summarize: Callable[..., object] | None = None
+    verify: Callable[..., object] | None = None
     stage_runner: StageRunner | None = None
     repo_root: str | os.PathLike[str] | None = None
 
@@ -927,6 +928,7 @@ class HeadlineRunResult:
     selection_cells: int
     final_cells: int
     stages: tuple[StageOutcome, ...] = field(default_factory=tuple)
+    evidence_path: Path | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -1262,6 +1264,27 @@ def run_headline(
     except Exception as exc:  # noqa: BLE001 - bounded fail-closed boundary
         raise HeadlineError(f"headline stage failed closed: {_bounded(exc)}") from exc
 
+    # Independently audit the published study from disk and publish the
+    # headline evidence before the caller can emit the success marker. A
+    # missing/mutated source fails closed here and never overwrites a stale
+    # complete record.
+    verify = deps.verify
+    if verify is None:
+        from . import headline_verify
+
+        verify = headline_verify.verify_headline
+    try:
+        verify(str(destination))
+    except HeadlineError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - bounded fail-closed boundary
+        raise HeadlineError(
+            f"independent headline audit failed closed: {_bounded(exc)}"
+        ) from exc
+    evidence_path = destination / "headline-evidence.json"
+    if not evidence_path.is_file():
+        evidence_path = None
+
     return HeadlineRunResult(
         output_path=destination,
         frozen_protocol_path=destination / FROZEN_PROTOCOL_FILENAME,
@@ -1274,6 +1297,7 @@ def run_headline(
         selection_cells=selection_cells,
         final_cells=final_cells,
         stages=tuple(stages),
+        evidence_path=evidence_path,
     )
 
 
