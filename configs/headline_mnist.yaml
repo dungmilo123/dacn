@@ -1,0 +1,128 @@
+# Frozen eight-policy real-MNIST headline protocol (M003/S04, D038).
+#
+#   python -m dfl_sim.headline configs/headline_mnist.yaml \
+#       --output runs/m003-mnist-headline
+#
+# This file is a *source* protocol, not yet an executable held-out study: the
+# three matched calibration aggregate digests and the matched calibration-input
+# digest only exist after the three production calibrations run. `dfl_sim
+# headline` therefore:
+#
+#   1. verifies/leases the T01 content-digested MNIST cache (real downloaded
+#      train and test splits, no injected fallback),
+#   2. writes a frozen-protocol.json binding this resolved spec, the cache
+#      identity, the seed split and the singleton candidate budget,
+#   3. runs the three production `dfl_sim calibrate` variants,
+#   4. generates `frozen-study.yaml` as a real, digest-pinned
+#      HeldOutStudyConfig with all eight panel policies,
+#   5. validates it through the S03 matched-artifact preflight and runs the
+#      production `dfl_sim evaluate` held-out study.
+#
+# Candidate budget is exactly one for every tunable policy (a single
+# predeclared candidate, not a search), so this protocol makes no
+# hyperparameter-search or winner claim. The reserved held_out schedule appears
+# only in the final phase. This is a deliberately small IID chain3 headline;
+# wide robustness, Dirichlet/non-IID and canonical report/figures remain S05.
+
+protocol_version: "dfl_sim.headline_protocol/v1"
+study_id: m003-mnist-headline
+data_provenance: real_mnist
+threads: 1
+
+# --- Frozen base experiment (CPU / bitwise SmallCNN, IID chain3) ----------- #
+base:
+  seed: 0
+  rounds: 6
+  device: cpu
+  bitwise: true
+
+  model:
+    name: small_cnn
+
+  data:
+    dataset: mnist
+    partition: iid
+    samples_per_node: 64
+    data_root: data
+    download: false
+
+  training:
+    optimizer: sgd
+    learning_rate: 0.05
+    batch_size: 32
+    local_epochs: 1
+    num_workers: 0
+
+  topology:
+    kind: chain3
+
+  attack:
+    compromised_node: 0
+    intensity: strong
+
+  aggregation:
+    kind: plain_average
+
+  evaluation:
+    max_samples: 128
+    batch_size: 32
+
+  trace:
+    snapshot_cadence: 1
+
+# --- Frozen paired seed split --------------------------------------------- #
+# Two selection seeds are frozen before any final access; the three final seeds
+# are disjoint from selection and from the calibration seed (20240101).
+selection_seeds: [1101, 1102]
+final_seeds: [2101, 2102, 2103]
+
+# --- Singleton candidate budget (no final-driven tuning) ------------------ #
+candidate_budget: 1
+selection_seed: 1101
+selection_provenance: "singleton-candidate-frozen-before-final"
+
+# --- Known schedules: collectively realize zero/weak/strong over 6 rounds -- #
+# All four D033 schedule kinds appear as named known schedules and together
+# cover the D016 zero (0.0), weak (2.0) and strong (5.0) intensities, matching
+# the base attack peak of strong.
+schedules:
+  - id: duty_cycle
+    schedule:
+      kind: duty_cycle
+      on_rounds: 3
+      off_rounds: 2
+      intensity: strong
+  - id: periodic
+    schedule:
+      kind: periodic
+      period: 6
+      strong_rounds: 2
+      weak_rounds: 2
+  - id: delayed_onset
+    schedule:
+      kind: delayed_onset
+      onset_round: 2
+      intensity: strong
+  - id: random
+    schedule:
+      kind: random
+      p_on: 0.5
+      intensity: weak
+
+# Reserved non-stationary pattern, structurally distinct from every known
+# schedule, used exclusively in the final phase.
+held_out_schedule:
+  id: held_out
+  schedule:
+    kind: held_out
+
+# --- Calibration source contract ------------------------------------------ #
+# Same dataset/sample/preprocessing contract as the headline; the runner
+# cross-checks these values against configs/calibrate_headline_mnist.yaml.
+calibration:
+  config: configs/calibrate_headline_mnist.yaml
+  seed: 20240101
+  episodes: 32
+  design_split_size: 16
+  p0: 0.5
+  mu_a: [0.0, 2.0, 5.0]

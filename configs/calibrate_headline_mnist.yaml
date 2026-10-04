@@ -1,0 +1,100 @@
+# Source calibration protocol for the M003/S04 real-MNIST headline study.
+#
+# This is the single *source* calibration config behind the matched
+# full/no-belief/no-strategic derivation triple. The three variant flags select
+# the derivation assumptions, not a different config, so the same file is used
+# unchanged for all three production commands:
+#
+#   python -m dfl_sim calibrate configs/calibrate_headline_mnist.yaml \
+#       --output <root>/calibration/full           --variant full
+#   python -m dfl_sim calibrate configs/calibrate_headline_mnist.yaml \
+#       --output <root>/calibration/no_belief      --variant no_belief
+#   python -m dfl_sim calibrate configs/calibrate_headline_mnist.yaml \
+#       --output <root>/calibration/no_strategic   --variant no_strategic
+#
+# The embedded reference experiment shares the headline's dataset / sample /
+# preprocessing contract (real MNIST, IID, 64 samples/node, batch 32, one local
+# epoch) and is deliberately one round so the calibration budget is bounded.
+# `data_root: data` is the same verified T01 cache root used by the headline
+# runner; download stays disabled because the runner leases an already verified
+# cache and never falls back to injected tensors.
+#
+# The seed is pinned and separate from the selection seeds (1101, 1102) and
+# the final seeds (2101, 2102, 2103). 32 episodes at p0=0.5 straddle the clean
+# and attacked strata, and the (0, 2, 5) mixture maps exactly onto the D016
+# zero/weak/strong intensities. Design size 16 is the disjoint clean scoring
+# split used by the offline estimator.
+
+# --- Embedded reference experiment ---------------------------------------- #
+experiment:
+  seed: 20240101
+  rounds: 1
+  device: cpu
+  bitwise: true
+
+  model:
+    name: small_cnn
+
+  data:
+    dataset: mnist
+    partition: iid
+    samples_per_node: 64
+    data_root: data
+    download: false
+
+  training:
+    optimizer: sgd
+    learning_rate: 0.05
+    batch_size: 32
+    local_epochs: 1
+    num_workers: 0
+
+  topology:
+    kind: chain3
+
+  aggregation:
+    kind: plain_average
+
+  evaluation:
+    max_samples: 128
+    batch_size: 32
+
+  trace:
+    snapshot_cadence: 1
+
+# --- Calibration sampler / estimator envelope ----------------------------- #
+episodes: 32
+p0: 0.5
+mu_a: [0.0, 2.0, 5.0]
+max_compromised: 1
+smoothing_alpha: 1.0
+design_split_size: 16
+
+# S01-compatible feature/context bins. The degree/progress labels are pinned
+# by the calibration contract; the feature edges are the checked-in
+# first-pass defaults shared with every other calibration config.
+bins:
+  disagreement:
+    edges: [0.25, 0.5, 0.75, 1.0]
+    labels: ["vlo", "lo", "mid", "hi", "vhi"]
+  relative_norm:
+    edges: [0.5, 1.0, 2.0]
+    labels: ["tiny", "small", "large", "huge"]
+  loss_delta:
+    edges: [-0.05, 0.0, 0.05]
+    labels: ["drop", "flatneg", "flatpos", "rise"]
+  degree:
+    labels: ["1", "2", "3-4", "5+"]
+  progress:
+    labels: ["early", "mid", "late"]
+
+# Pinned D021/D022 action-space provenance shared with the online policy and
+# the headline panel's Bayesian aggregation (omega/degree_cap/tie_tolerance).
+action_space:
+  multiplier_set: [0.0, 0.5, 1.0]
+  self_multiplier: 1.0
+  omega: 0.5
+  degree_cap: 4
+  tie_tolerance: 1.0e-09
+  ordering: "fewer_rejected_then_lexicographic"
+  pruning: "directional_disagreement_desc_sender_id_asc"
