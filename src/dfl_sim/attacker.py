@@ -31,9 +31,21 @@ from typing import Protocol, runtime_checkable
 import torch
 
 from .aggregation import ModelState
+from .attack_schedule import (
+    ScheduleConfig,
+    ScheduleModel,
+    derive_schedule_seed,
+    kappa_for_round,
+    realized_kappa_sequence,
+)
 from .config import ExperimentConfig, AttackConfig
 
-__all__ = ["AttackError", "FixedAttackController", "OutgoingController"]
+__all__ = [
+    "AdaptiveAttackController",
+    "AttackError",
+    "FixedAttackController",
+    "OutgoingController",
+]
 
 
 class AttackError(RuntimeError):
@@ -196,6 +208,153 @@ class FixedAttackController:
         kappa = self.kappa
         # kappa == 0.0 is an exact no-op: short-circuit so a selected node with
         # zero intensity is tensor-identical to the honest outgoing model.
+        poisoned = self.compromised_node == sender_id and kappa != 0.0
+
+        outgoing: ModelState = {}
+        for key in sorted(trained):
+            value = trained[key]
+            if not poisoned or not torch.is_floating_point(value):
+                outgoing[key] = value.detach().clone()
+                continue
+            reference = round_start[key]
+            outgoing[key] = (value - kappa * (value - reference)).detach().clone()
+        return outgoing
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptiveAttackController:
+    """Immutable schedule-driven D016 controller (R018, D031).
+
+    Unlike :class:`FixedAttackController`, which holds one static per-episode
+    ``kappa``, this controller selects the D016 intensity *per round* from a
+    validated :class:`~dfl_sim.attack_schedule.ScheduleConfig`. It holds the
+    single ``compromised_node``, the schedule, the episode ``total_rounds``,
+    and the schedule seed derived from the episode master seed, and it applies
+    the exact same transform ``w_tilde - kappa * (w_tilde - w)`` with a
+    tensor-identical no-op at ``kappa == 0.0``.
+
+    The controller is pure and immutable: :meth:`outgoing_state` reads only the
+    sender id, the two provided state maps, and the round context. It never
+    reads the topology, evaluator, inboxes, or any defender feedback, so it
+    satisfies the unchanged :class:`OutgoingController` seam.
+    """
+
+    compromised_node: int | None
+    schedule: ScheduleConfig
+    total_rounds: int
+    schedule_seed: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.schedule, ScheduleModel):
+            raise AttackError(
+                "schedule must be a validated ScheduleConfig, got "
+                f"{type(self.schedule).__name__}"
+            )
+        node = self.compromised_node
+        if node is not None and (
+            isinstance(node, bool) or not isinstance(node, int) or node < 0
+        ):
+            raise AttackError(
+                "compromised_node must be a non-negative int or None, got "
+                f"{node!r}"
+            )
+        if (
+            isinstance(self.total_rounds, bool)
+            or not isinstance(self.total_rounds, int)
+            or self.total_rounds < 1
+        ):
+            raise AttackError(
+                "total_rounds must be a positive int, got "
+                f"{self.total_rounds!r}"
+            )
+        if (
+            isinstance(self.schedule_seed, bool)
+            or not isinstance(self.schedule_seed, int)
+            or self.schedule_seed < 0
+        ):
+            raise AttackError(
+                "schedule_seed must be a non-negative int, got "
+                f"{self.schedule_seed!r}"
+            )
+
+    @classmethod
+    def from_episode(
+        cls,
+        *,
+        compromised_node: int | None,
+        schedule: ScheduleConfig,
+        total_rounds: int,
+        master_seed: int,
+    ) -> "AdaptiveAttackController":
+        """Build a controller whose schedule seed derives from the episode seed."""
+
+        return cls(
+            compromised_node=compromised_node,
+            schedule=schedule,
+            total_rounds=total_rounds,
+            schedule_seed=derive_schedule_seed(master_seed, schedule),
+        )
+
+    @property
+    def peak_kappa(self) -> float:
+        """The highest kappa the bound schedule can realize over the episode."""
+
+        return max(
+            realized_kappa_sequence(
+                self.schedule, self.total_rounds, self.schedule_seed
+            )
+        )
+
+    def kappa_for(self, round_index: int) -> float:
+        """Return the selected D016 kappa for ``round_index`` (0 for honest)."""
+
+        if (
+            isinstance(round_index, bool)
+            or not isinstance(round_index, int)
+            or round_index < 0
+        ):
+            raise AttackError(
+                f"round_index must be a non-negative int, got {round_index!r}"
+            )
+        if self.compromised_node is None:
+            return 0.0
+        return kappa_for_round(
+            self.schedule, round_index, self.total_rounds, self.schedule_seed
+        )
+
+    def outgoing_state(
+        self,
+        *,
+        sender: int,
+        round_start: Mapping[str, torch.Tensor],
+        trained: Mapping[str, torch.Tensor],
+        round_index: int | None = None,
+        context: str = "",
+    ) -> ModelState:
+        """Return ``sender``'s canonical outgoing model as detached clones.
+
+        The configured sender receives the schedule-selected per-round
+        transform; the exact ``kappa == 0.0`` case is a tensor-identical clone
+        of ``trained``. A schedule without a round index cannot be resolved, so
+        ``round_index is None`` fails closed. The full state pair is validated
+        before any output is produced.
+        """
+
+        sender_id = int(sender)
+        if round_index is None:
+            raise AttackError(
+                f"AdaptiveAttackController requires a round_index "
+                f"(sender={sender_id})"
+            )
+        index = int(round_index)
+        ctx = f"sender={sender_id} round={index}"
+        if context:
+            ctx += f" {context}"
+        suffix = f" ({ctx})"
+
+        _validate_state_pair(round_start, trained, suffix=suffix)
+
+        kappa = self.kappa_for(index)
         poisoned = self.compromised_node == sender_id and kappa != 0.0
 
         outgoing: ModelState = {}
