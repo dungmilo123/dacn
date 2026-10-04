@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
@@ -44,7 +45,13 @@ from typing import Union
 from torch.utils.data import Dataset
 
 from .attacker import AdaptiveAttackController, OutgoingController
-from .attack_schedule import realized_kappa_sequence, schedule_digest
+from .attack_schedule import (
+    ScheduleError,
+    build_schedule,
+    derive_schedule_seed,
+    realized_kappa_sequence,
+    schedule_digest,
+)
 from .bayesian_artifact import BayesianArtifactError, load_bayesian_artifact
 from .config import AggregationConfig, ExperimentConfig
 from .evaluation_config import (
@@ -73,6 +80,11 @@ __all__ = [
     "FINAL_MANIFEST_FILENAME",
     "FINAL_MANIFEST_SCHEMA",
     "FINAL_MANIFEST_SCHEMA_VERSION",
+    "ROBUSTNESS_QUANTILE_METHOD",
+    "ROBUSTNESS_STD_METHOD",
+    "ROBUSTNESS_SUMMARY_FILENAME",
+    "ROBUSTNESS_SUMMARY_SCHEMA",
+    "ROBUSTNESS_SUMMARY_SCHEMA_VERSION",
     "SELECTION_MANIFEST_FILENAME",
     "SELECTION_MANIFEST_SCHEMA",
     "SELECTION_MANIFEST_SCHEMA_VERSION",
@@ -85,14 +97,17 @@ __all__ = [
     "SelectionCell",
     "SelectionResult",
     "build_cell_config",
+    "build_robustness_summary",
     "compute_shared_input_digest",
     "final_output_digest",
     "load_study_config",
+    "read_final_round_metrics",
     "run_baseline_study",
     "run_final_phase",
     "run_held_out_study",
     "run_selection_phase",
     "selection_output_digest",
+    "summarize_held_out_study",
     "validate_shared_inputs",
 ]
 
@@ -115,6 +130,21 @@ SELECTION_MANIFEST_SCHEMA_VERSION = 1
 FINAL_MANIFEST_FILENAME = "final-manifest.json"
 FINAL_MANIFEST_SCHEMA = "dfl_held_out_study_manifest"
 FINAL_MANIFEST_SCHEMA_VERSION = 1
+
+#: Versioned paired-metrics summary identity (M003/S02/T06). This is the
+#: machine-readable paired-per-cell evidence that the S05 canonical report
+#: consumes; it carries no figures and no claim/evidence-class framing.
+ROBUSTNESS_SUMMARY_FILENAME = "robustness-summary.json"
+ROBUSTNESS_SUMMARY_SCHEMA = "dfl_robustness_summary"
+ROBUSTNESS_SUMMARY_SCHEMA_VERSION = 1
+
+#: Pinned spread method: population standard deviation (``ddof == 0``).
+ROBUSTNESS_STD_METHOD = "population"
+
+#: Pinned IQR quantile method. ``linear`` is the R-7 / numpy default
+#: ``method="linear"`` interpolation, recorded so downstream readers never
+#: have to guess how the interquartile range was computed.
+ROBUSTNESS_QUANTILE_METHOD = "linear"
 
 #: Private same-parent staging prefix; the final directory is renamed into place.
 _STAGING_PREFIX = ".baseline_study.staging-"
@@ -626,9 +656,19 @@ def _execute_cell_run(
 
 
 def _validate_cell_trace(
-    validator: TraceValidator, trace_dir: Path, *, label: str
-) -> None:
-    """Validate one committed schema-v1 trace; ``label`` supplies exact wording."""
+    validator: TraceValidator,
+    trace_dir: Path,
+    *,
+    label: str,
+    measure: bool = False,
+) -> dict | None:
+    """Validate one committed schema-v1 trace; ``label`` supplies exact wording.
+
+    With ``measure=True`` the validated reader's events are also reduced to the
+    final evaluated round's per-node metrics (used by the final phase to embed
+    a compact ``metrics`` block per manifest entry). The reduction runs on the
+    reader that already validated the trace, so no trace is opened twice.
+    """
 
     try:
         with validator(trace_dir) as reader:
@@ -638,6 +678,14 @@ def _validate_cell_trace(
                     f"{label} produced schema version {schema!r}, expected "
                     f"{SCHEMA_VERSION}"
                 )
+            if not measure:
+                return None
+            events = getattr(reader, "events", None)
+            if events is None:
+                raise EvaluationError(
+                    f"{label} trace reader exposes no events for metrics"
+                )
+            return _final_round_metrics_from_events(tuple(events), label=label)
     except EvaluationError:
         raise
     except (TrajectoryError, OSError) as exc:
@@ -1182,12 +1230,17 @@ def _final_manifest_entry(
     artifact_digest: str | None,
     relative: str,
     held_out: bool,
+    metrics: Mapping[str, object] | None = None,
 ) -> dict:
     """One per-cell final manifest entry.
 
     Reuses the selection entry shape (including the schedule id/spec/digest and
     the controller-derived ``realized_kappa_sequence``) and adds a boolean
-    ``held_out`` flag marking the reserved unseen schedule.
+    ``held_out`` flag marking the reserved unseen schedule. When the cell trace
+    has been measured, a compact ``metrics`` block (final mean accuracy,
+    worst-node accuracy, mean loss, node count) is embedded so downstream
+    report compilation can read paired per-cell metrics without reopening every
+    trace.
     """
 
     entry = _selection_manifest_entry(
@@ -1201,6 +1254,8 @@ def _final_manifest_entry(
         relative=relative,
     )
     entry["held_out"] = bool(held_out)
+    if metrics is not None:
+        entry["metrics"] = dict(metrics)
     return entry
 
 
@@ -1410,7 +1465,9 @@ def run_final_phase(
                 evaluation_dataset_loader=evaluation_dataset_loader,
                 controller=controller,
             )
-            _validate_cell_trace(validator, trace_dir, label=label)
+            metrics = _validate_cell_trace(
+                validator, trace_dir, label=label, measure=True
+            )
 
             artifact_digest = _artifact_digest(
                 policy.aggregation, artifact_cache
@@ -1425,6 +1482,7 @@ def run_final_phase(
                 artifact_digest=artifact_digest,
                 relative=relative,
                 held_out=schedule.id == held_out_id,
+                metrics=metrics,
             )
             published_cells.append(
                 SelectionCell(
@@ -1629,6 +1687,15 @@ def run_held_out_study(
             trace_validator=validator,
         )
         _fsync_dir(final_output)
+        # Build the paired per-cell metrics summary from the just-written final
+        # traces while still inside staging, so the published study root is a
+        # single atomic unit containing selection/, final/, and the summary.
+        summary = build_robustness_summary(
+            final_result.manifest, trace_root=final_output
+        )
+        _write_bytes_synced(
+            staging / ROBUSTNESS_SUMMARY_FILENAME, manifest_bytes(summary)
+        )
         _fsync_dir(staging)
         try:
             os.rename(staging, destination)
@@ -1656,3 +1723,504 @@ def run_held_out_study(
             output_path=final_path,
         ),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Paired per-cell metrics summary (M003/S02/T06)
+# --------------------------------------------------------------------------- #
+def _final_round_metrics_from_events(
+    events: Sequence[Mapping[str, object]], *, label: str
+) -> dict:
+    """Reduce validated events to the final evaluated round's per-node metrics.
+
+    Returns the mean and worst-node accuracy, the mean loss, and the node count
+    for the last (highest-index) evaluated round. Raises a bounded
+    :class:`EvaluationError` when the trace has no rounds or a malformed node
+    record instead of silently producing partial evidence.
+    """
+
+    if not events:
+        raise EvaluationError(f"{label} trace has no evaluated rounds")
+    final = events[-1]
+    nodes = final.get("nodes") if isinstance(final, Mapping) else None
+    if (
+        not isinstance(nodes, Sequence)
+        or isinstance(nodes, (str, bytes))
+        or not nodes
+    ):
+        raise EvaluationError(f"{label} final round has no per-node metrics")
+    accuracies: list[float] = []
+    losses: list[float] = []
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            raise EvaluationError(f"{label} final round has a malformed node")
+        try:
+            accuracy = float(node["accuracy"])
+            loss = float(node["loss"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EvaluationError(
+                f"{label} final round has malformed node metrics"
+            ) from exc
+        if not math.isfinite(accuracy) or not math.isfinite(loss):
+            raise EvaluationError(
+                f"{label} final round has non-finite node metrics"
+            )
+        accuracies.append(accuracy)
+        losses.append(loss)
+    return {
+        "mean_accuracy": sum(accuracies) / len(accuracies),
+        "worst_node_accuracy": min(accuracies),
+        "mean_loss": sum(losses) / len(losses),
+        "node_count": len(accuracies),
+    }
+
+
+def read_final_round_metrics(
+    trace_path: str | os.PathLike[str],
+    *,
+    trace_reader: TraceValidator = TraceReader,
+) -> dict:
+    """Read one schema-v1 trace and return its final-round per-node metrics."""
+
+    display = os.fspath(trace_path)
+    try:
+        with trace_reader(trace_path) as reader:
+            schema = getattr(reader, "schema_version", SCHEMA_VERSION)
+            if schema != SCHEMA_VERSION:
+                raise EvaluationError(
+                    f"trace {display!r} is schema version {schema!r}, "
+                    f"expected {SCHEMA_VERSION}"
+                )
+            events = getattr(reader, "events", None)
+            if events is None:
+                raise EvaluationError(
+                    f"trace {display!r} reader exposes no events for metrics"
+                )
+            return _final_round_metrics_from_events(
+                tuple(events), label=f"trace {display!r}"
+            )
+    except EvaluationError:
+        raise
+    except (TrajectoryError, OSError) as exc:
+        raise EvaluationError(
+            f"could not read trace {display!r}: {exc}"
+        ) from exc
+
+
+def _population_std(values: Sequence[float]) -> float:
+    """Population standard deviation (``ddof == 0``) of the given values."""
+
+    count = len(values)
+    mean = sum(values) / count
+    variance = sum((value - mean) ** 2 for value in values) / count
+    return math.sqrt(variance)
+
+
+def _linear_quantile(ordered: Sequence[float], q: float) -> float:
+    """Linear-interpolation quantile (R-7 / numpy ``method="linear"``)."""
+
+    count = len(ordered)
+    if count == 1:
+        return float(ordered[0])
+    position = q * (count - 1)
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return float(ordered[int(position)])
+    fraction = position - lower
+    return float(ordered[lower]) + fraction * (
+        float(ordered[upper]) - float(ordered[lower])
+    )
+
+
+def _validate_final_manifest_for_summary(manifest: Mapping[str, object]) -> None:
+    """Validate the final-manifest envelope needed to build paired metrics."""
+
+    if manifest.get("schema") != FINAL_MANIFEST_SCHEMA:
+        raise EvaluationError(
+            f"final manifest schema {manifest.get('schema')!r} is not "
+            f"{FINAL_MANIFEST_SCHEMA!r}"
+        )
+    if manifest.get("schema_version") != FINAL_MANIFEST_SCHEMA_VERSION:
+        raise EvaluationError(
+            f"final manifest schema_version {manifest.get('schema_version')!r} "
+            f"is not {FINAL_MANIFEST_SCHEMA_VERSION!r}"
+        )
+    if manifest.get("phase") != "final":
+        raise EvaluationError(
+            f"final manifest phase {manifest.get('phase')!r} is not 'final'"
+        )
+    if manifest.get("status") != "complete":
+        raise EvaluationError(
+            f"final manifest status {manifest.get('status')!r} is not 'complete'"
+        )
+    entries = manifest.get("entries")
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise EvaluationError("final manifest entries must be a sequence")
+    if not entries:
+        raise EvaluationError("final manifest has no entries to summarize")
+    final_seeds = manifest.get("final_seeds")
+    if (
+        not isinstance(final_seeds, Sequence)
+        or isinstance(final_seeds, (str, bytes))
+        or not final_seeds
+    ):
+        raise EvaluationError("final manifest final_seeds must be a non-empty sequence")
+
+
+def _load_final_manifest_for_summary(
+    study_output: str | os.PathLike[str],
+) -> tuple[Path, Path, dict]:
+    """Locate and validate the final manifest inside a published study root.
+
+    Accepts either the two-phase study root (``<root>/final/final-manifest.json``
+    with traces under ``<root>/final``) or a flat final-only output
+    (``<root>/final-manifest.json`` with traces under ``<root>``).
+    """
+
+    root = Path(os.path.abspath(os.fspath(study_output)))
+    if not root.is_dir():
+        raise EvaluationError(f"study output directory not found: {root}")
+    nested = root / "final" / FINAL_MANIFEST_FILENAME
+    flat = root / FINAL_MANIFEST_FILENAME
+    if nested.is_file():
+        final_dir, manifest_path = root / "final", nested
+    elif flat.is_file():
+        final_dir, manifest_path = root, flat
+    else:
+        raise EvaluationError(
+            f"study output is missing {FINAL_MANIFEST_FILENAME}: {root}"
+        )
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise EvaluationError(
+            f"could not read final manifest {manifest_path}: {exc}"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise EvaluationError(
+            f"final manifest {manifest_path} is not a JSON object"
+        )
+    manifest = dict(raw)
+    _validate_final_manifest_for_summary(manifest)
+    return root, final_dir, manifest
+
+
+def _coerce_schedule_spec(payload: object, *, label: str):
+    """Reconstruct a validated schedule from its dumped manifest payload."""
+
+    if not isinstance(payload, Mapping):
+        raise EvaluationError(f"{label} schedule payload is not an object")
+    fields = dict(payload)
+    kind = fields.pop("kind", None)
+    try:
+        return build_schedule(str(kind), **fields)
+    except (ScheduleError, TypeError, ValueError) as exc:
+        raise EvaluationError(
+            f"{label} schedule spec is malformed: {exc}"
+        ) from exc
+
+
+def build_robustness_summary(
+    final_manifest: Mapping[str, object],
+    *,
+    trace_root: str | os.PathLike[str],
+    selection_seeds: Sequence[int] | None = None,
+    trace_reader: TraceValidator = TraceReader,
+) -> dict:
+    """Aggregate paired per-cell metrics over a validated final manifest.
+
+    Every cited trace is reopened through ``trace_reader`` and reduced to its
+    final evaluated round's per-node ``loss``/``accuracy``. Each
+    ``(policy_id, schedule_id)`` pair across the paired final seeds yields the
+    mean accuracy, population standard deviation, linearly interpolated IQR,
+    mean loss, worst-node accuracy (minimum over nodes and seeds), node count,
+    and the seed list. Fails closed with a bounded error when a cited trace is
+    missing/unreadable, its seed/policy provenance or canonical trace path
+    disagrees with the manifest, the recorded schedule is internally
+    inconsistent, or the per-policy seed sets differ from the manifest split.
+
+    This is deliberately *not* the S05 canonical report: it carries no figures
+    and no claim/evidence-class framing, only deterministic paired metrics.
+    """
+
+    manifest = dict(final_manifest)
+    _validate_final_manifest_for_summary(manifest)
+
+    entries = tuple(manifest["entries"])
+    final_seeds = tuple(sorted(int(seed) for seed in manifest["final_seeds"]))
+    if selection_seeds is None:
+        raw_selection = manifest.get("selection_seeds")
+        if (
+            not isinstance(raw_selection, Sequence)
+            or isinstance(raw_selection, (str, bytes))
+        ):
+            raise EvaluationError(
+                "final manifest selection_seeds must be a sequence"
+            )
+        selection_seeds = tuple(int(seed) for seed in raw_selection)
+    else:
+        selection_seeds = tuple(int(seed) for seed in selection_seeds)
+    selection_seeds = tuple(sorted(selection_seeds))
+    if set(selection_seeds) & set(final_seeds):
+        raise EvaluationError(
+            "selection and final seeds overlap in the paired study split"
+        )
+
+    root = Path(os.path.abspath(os.fspath(trace_root)))
+    if not root.is_dir():
+        raise EvaluationError(f"trace root directory not found: {root}")
+    resolved_root = root.resolve()
+
+    cells: dict[tuple[str, str], dict[int, dict]] = {}
+    held_out_by_schedule: dict[str, bool] = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise EvaluationError("final manifest entry must be an object")
+        try:
+            seed = int(entry["seed"])
+            policy_id = str(entry["policy_id"])
+            schedule_id = str(entry["schedule_id"])
+            relative = str(entry["trace_path"])
+            held_out = bool(entry["held_out"])
+            schedule_payload = entry["schedule"]
+            schedule_digest_value = str(entry["schedule_digest"])
+            realized = tuple(float(x) for x in entry["realized_kappa_sequence"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EvaluationError("final manifest entry is malformed") from exc
+        label = f"policy {policy_id!r} seed {seed} schedule {schedule_id!r}"
+
+        expected = _selection_relative_trace_path(policy_id, seed, schedule_id)
+        if relative != expected:
+            raise EvaluationError(
+                f"{label} trace_path {relative!r} does not match the canonical "
+                f"schedule/policy/seed location {expected!r}"
+            )
+        trace_path = root / relative
+        try:
+            resolved_trace = trace_path.resolve()
+        except OSError as exc:
+            raise EvaluationError(
+                f"{label} trace path is unresolvable: {exc}"
+            ) from exc
+        if not resolved_trace.is_relative_to(resolved_root):
+            raise EvaluationError(f"{label} trace path escapes the trace root")
+
+        schedule_spec = _coerce_schedule_spec(schedule_payload, label=label)
+        if schedule_digest(schedule_spec) != schedule_digest_value:
+            raise EvaluationError(
+                f"{label} schedule_digest disagrees with the recorded schedule"
+            )
+
+        try:
+            with trace_reader(resolved_trace) as reader:
+                schema = getattr(reader, "schema_version", SCHEMA_VERSION)
+                if schema != SCHEMA_VERSION:
+                    raise EvaluationError(
+                        f"{label} trace is schema version {schema!r}, "
+                        f"expected {SCHEMA_VERSION}"
+                    )
+                config = getattr(reader, "config", None)
+                events = getattr(reader, "events", None)
+                if config is None or events is None:
+                    raise EvaluationError(
+                        f"{label} trace reader exposes no config/events"
+                    )
+                trace_seed = int(config.seed)
+                trace_kind = str(config.aggregation.kind)
+                rounds = int(config.rounds)
+                metrics = _final_round_metrics_from_events(
+                    tuple(events), label=label
+                )
+        except EvaluationError:
+            raise
+        except (TrajectoryError, OSError) as exc:
+            raise EvaluationError(
+                f"could not read trace for {label}: {exc}"
+            ) from exc
+
+        if trace_seed != seed:
+            raise EvaluationError(
+                f"{label} trace seed {trace_seed} disagrees with the manifest"
+            )
+        if trace_kind != policy_id:
+            raise EvaluationError(
+                f"{label} trace aggregation {trace_kind!r} disagrees with the "
+                "manifest policy provenance"
+            )
+        expected_kappa = realized_kappa_sequence(
+            schedule_spec, rounds, derive_schedule_seed(seed, schedule_spec)
+        )
+        if tuple(expected_kappa) != realized:
+            raise EvaluationError(
+                f"{label} realized_kappa_sequence disagrees with the recorded "
+                "schedule"
+            )
+
+        previous_flag = held_out_by_schedule.setdefault(schedule_id, held_out)
+        if previous_flag != held_out:
+            raise EvaluationError(
+                f"schedule {schedule_id!r} has inconsistent held_out flags"
+            )
+        bucket = cells.setdefault((schedule_id, policy_id), {})
+        if seed in bucket:
+            raise EvaluationError(f"duplicate manifest cell {label}")
+        bucket[seed] = {"metrics": metrics, "held_out": held_out}
+
+    panel_raw = manifest.get("panel") or list(REQUIRED_POLICY_IDS)
+    panel = tuple(str(policy_id) for policy_id in panel_raw)
+    schedule_ids = sorted({schedule_id for schedule_id, _ in cells})
+    expected_seeds = set(final_seeds)
+
+    aggregates: list[dict] = []
+    for schedule_id in schedule_ids:
+        for policy_id in panel:
+            bucket = cells.get((schedule_id, policy_id))
+            if not bucket:
+                raise EvaluationError(
+                    f"schedule {schedule_id!r} is missing policy {policy_id!r}"
+                )
+            if set(bucket) != expected_seeds:
+                raise EvaluationError(
+                    f"schedule {schedule_id!r} policy {policy_id!r} paired seed "
+                    f"set {sorted(bucket)!r} disagrees with the final seeds "
+                    f"{list(final_seeds)!r}"
+                )
+            seeds = sorted(bucket)
+            per_seed_accuracy = [
+                float(bucket[seed]["metrics"]["mean_accuracy"]) for seed in seeds
+            ]
+            per_seed_loss = [
+                float(bucket[seed]["metrics"]["mean_loss"]) for seed in seeds
+            ]
+            node_counts = {
+                int(bucket[seed]["metrics"]["node_count"]) for seed in seeds
+            }
+            if len(node_counts) != 1:
+                raise EvaluationError(
+                    f"schedule {schedule_id!r} policy {policy_id!r} has "
+                    f"inconsistent node counts {sorted(node_counts)!r}"
+                )
+            ordered_accuracy = sorted(per_seed_accuracy)
+            aggregates.append(
+                {
+                    "policy_id": policy_id,
+                    "schedule_id": schedule_id,
+                    "held_out": bool(bucket[seeds[0]]["held_out"]),
+                    "seeds": seeds,
+                    "count": len(seeds),
+                    "node_count": node_counts.pop(),
+                    "mean_accuracy": sum(per_seed_accuracy) / len(seeds),
+                    "std_accuracy": _population_std(per_seed_accuracy),
+                    "iqr_accuracy": _linear_quantile(ordered_accuracy, 0.75)
+                    - _linear_quantile(ordered_accuracy, 0.25),
+                    "mean_loss": sum(per_seed_loss) / len(seeds),
+                    "worst_node_accuracy": min(
+                        float(bucket[seed]["metrics"]["worst_node_accuracy"])
+                        for seed in seeds
+                    ),
+                    "per_seed": [
+                        {
+                            "seed": seed,
+                            "mean_accuracy": per_seed_accuracy[index],
+                            "mean_loss": per_seed_loss[index],
+                            "worst_node_accuracy": float(
+                                bucket[seed]["metrics"]["worst_node_accuracy"]
+                            ),
+                        }
+                        for index, seed in enumerate(seeds)
+                    ],
+                }
+            )
+
+    return {
+        "schema": ROBUSTNESS_SUMMARY_SCHEMA,
+        "schema_version": ROBUSTNESS_SUMMARY_SCHEMA_VERSION,
+        "status": "complete",
+        "study_id": manifest.get("study_id"),
+        "data_provenance": manifest.get("data_provenance"),
+        "study_digest": manifest.get("study_digest"),
+        "selection_spec_digest": manifest.get("selection_spec_digest"),
+        "held_out_study_digest": manifest.get("held_out_study_digest"),
+        "final_output_digest": manifest.get("final_output_digest"),
+        "selection_seeds": list(selection_seeds),
+        "final_seeds": list(final_seeds),
+        "panel": list(panel),
+        "schedule_ids": list(schedule_ids),
+        "std_method": ROBUSTNESS_STD_METHOD,
+        "quantile_method": ROBUSTNESS_QUANTILE_METHOD,
+        "aggregates": aggregates,
+    }
+
+
+def summarize_held_out_study(
+    study_output: str | os.PathLike[str],
+    *,
+    write: bool = True,
+    trace_reader: TraceValidator = TraceReader,
+) -> dict:
+    """Emit the paired per-cell robustness summary for a published study root.
+
+    Loads and validates the final manifest, cross-checks the frozen selection
+    manifest when it is present, then builds the paired metrics summary and, by
+    default, writes it deterministically to
+    ``<study_output>/robustness-summary.json``. Returns the summary mapping so
+    callers (e.g. the S05 report compiler) can consume it without re-reading
+    the file.
+    """
+
+    root, final_dir, manifest = _load_final_manifest_for_summary(study_output)
+
+    selection_manifest_path = (
+        root / "selection" / SELECTION_MANIFEST_FILENAME
+    )
+    if selection_manifest_path.is_file():
+        try:
+            selection_raw = json.loads(
+                selection_manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise EvaluationError(
+                f"could not read selection manifest "
+                f"{selection_manifest_path}: {exc}"
+            ) from exc
+        if not isinstance(selection_raw, dict):
+            raise EvaluationError(
+                f"selection manifest {selection_manifest_path} is not a JSON "
+                "object"
+            )
+        if selection_raw.get("schema") != SELECTION_MANIFEST_SCHEMA:
+            raise EvaluationError(
+                f"selection manifest schema {selection_raw.get('schema')!r} "
+                f"is not {SELECTION_MANIFEST_SCHEMA!r}"
+            )
+        if selection_raw.get("status") != "frozen":
+            raise EvaluationError(
+                f"selection manifest status {selection_raw.get('status')!r} "
+                "is not 'frozen'"
+            )
+        frozen_seeds = selection_raw.get("selection_seeds")
+        manifest_seeds = manifest.get("selection_seeds")
+        if (
+            isinstance(frozen_seeds, Sequence)
+            and not isinstance(frozen_seeds, (str, bytes))
+            and isinstance(manifest_seeds, Sequence)
+            and not isinstance(manifest_seeds, (str, bytes))
+            and sorted(int(seed) for seed in frozen_seeds)
+            != sorted(int(seed) for seed in manifest_seeds)
+        ):
+            raise EvaluationError(
+                "frozen selection seed list disagrees with the final manifest"
+            )
+
+    summary = build_robustness_summary(
+        manifest,
+        trace_root=final_dir,
+        selection_seeds=manifest.get("selection_seeds"),
+        trace_reader=trace_reader,
+    )
+    if write:
+        _write_bytes_synced(
+            root / ROBUSTNESS_SUMMARY_FILENAME, manifest_bytes(summary)
+        )
+    return summary
