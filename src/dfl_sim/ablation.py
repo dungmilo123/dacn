@@ -70,6 +70,7 @@ __all__ = [
     "dataset_content_digest",
     "effective_mixture",
     "isolation_statement",
+    "matched_calibration_input_digest",
     "membership_digest",
     "normalize_calibration_config",
     "require_variant",
@@ -232,6 +233,43 @@ def calibration_config_digest(payload: Mapping[str, Any]) -> str:
     """Return the path-independent identity of a calibration config body."""
 
     return _sha256_json(normalize_calibration_config(payload))
+
+
+def matched_calibration_input_digest(
+    derivation: CalibrationDerivation,
+) -> str:
+    """Return the shared calibration-input identity of a derivation.
+
+    This combines the *declared* normalized calibration-config identity, the
+    calibration seed, the actual dataset and partition/design membership
+    fingerprints, and the intensity-excluding schedule-pairing fingerprint.
+    Variant / effective-mixture fields, every table byte, and the declared
+    derivation budgets are excluded (the budgets are separately cross-checked by
+    the preflight and are already bound by the aggregate digest and, for
+    episodes/design size, by the config digest). ``full``, ``no_belief`` and
+    ``no_strategic`` artifacts derived from one calibration run therefore share
+    exactly one matched identity while genuinely different data, partitions,
+    seeds, or configs change it.
+
+    The digest is a matching identity, not a content fingerprint: the actual
+    dataset content is fingerprinted separately by
+    :func:`dataset_content_digest` and carried inside this value.
+    """
+
+    if not isinstance(derivation, CalibrationDerivation):
+        raise AblationError(
+            "matched_calibration_input_digest requires a CalibrationDerivation"
+        )
+    return _sha256_json(
+        {
+            "protocol_version": derivation.protocol_version,
+            "seed": derivation.seed,
+            "calibration_config_digest": derivation.calibration_config_digest,
+            "dataset_inputs_digest": derivation.dataset_inputs_digest,
+            "partition_membership_digest": derivation.partition_membership_digest,
+            "schedule_pairing_digest": derivation.schedule_pairing_digest,
+        }
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -22,10 +22,13 @@ Configuration is treated as untrusted structured input (Q3 threat surface):
   logs with an unbounded validation dump.
 
 The panel must contain exactly the six M003 baseline identities
-(:data:`REQUIRED_POLICY_IDS`). Tunable policies must declare the study's single
-positive candidate budget and selection-seed provenance; parameter-free
-policies must explicitly declare zero/exempt rather than pretending to tune.
-The BALANCE entry's citation is pinned to the D028 external reference.
+(:data:`REQUIRED_POLICY_IDS`); when the optional :class:`AblationStudyContract`
+is present it must instead contain exactly the eight :data:`EXTENDED_POLICY_IDS`
+(the same six plus ``bayesian_no_belief`` and ``bayesian_no_strategic``).
+Tunable policies must declare the study's single positive candidate budget and
+selection-seed provenance; parameter-free policies must explicitly declare
+zero/exempt rather than pretending to tune. The BALANCE entry's citation is
+pinned to the D028 external reference.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from typing import Annotated, Literal
 
 import yaml
@@ -43,9 +47,16 @@ from pydantic import (
     Field,
     ValidationError,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
+from .ablation import (
+    CALIBRATION_VARIANTS,
+    FULL_VARIANT,
+    NO_BELIEF_VARIANT,
+    NO_STRATEGIC_VARIANT,
+)
 from .attack_schedule import (
     ScheduleConfig,
     intensity_name,
@@ -61,7 +72,11 @@ from .config import (
 )
 
 __all__ = [
+    "ABLATION_POLICY_IDS",
+    "ABLATION_VARIANT_BY_POLICY_ID",
+    "ARTIFACT_POLICY_IDS",
     "BALANCE_CITATION",
+    "EXTENDED_POLICY_IDS",
     "MAX_CANDIDATE_BUDGET",
     "MAX_KNOWN_SCHEDULES",
     "MAX_STUDY_ID_LEN",
@@ -69,6 +84,8 @@ __all__ = [
     "MIN_TOTAL_SEEDS_INJECTED",
     "MIN_TOTAL_SEEDS_REAL_MNIST",
     "REQUIRED_POLICY_IDS",
+    "AblationArtifactPin",
+    "AblationStudyContract",
     "BaselineStudyConfig",
     "BaselineStudyConfigError",
     "CitationMetadata",
@@ -135,11 +152,45 @@ REQUIRED_POLICY_IDS: tuple[str, ...] = (
 #: Panel identities whose hyperparameters are selected under the matched
 #: candidate budget, versus the structurally parameter-free baselines.
 _TUNABLE_POLICY_IDS: frozenset[str] = frozenset(
-    {"fixed_similarity", "trust_weighted", "balance", "bayesian"}
+    {
+        "fixed_similarity",
+        "trust_weighted",
+        "balance",
+        "bayesian",
+        "bayesian_no_belief",
+        "bayesian_no_strategic",
+    }
 )
 _PARAMETER_FREE_POLICY_IDS: frozenset[str] = frozenset(
     {"local_only", "plain_average"}
 )
+
+#: Opt-in ablation panel identities (R021/D036/D037). They may only appear when
+#: a study declares the :class:`AblationStudyContract`; both map onto the
+#: existing ``bayesian`` aggregation kind (the artifact is the experimental
+#: variable, not a new runtime policy class).
+ABLATION_POLICY_IDS: tuple[str, ...] = (
+    "bayesian_no_belief",
+    "bayesian_no_strategic",
+)
+
+#: The canonical eight-policy panel an opt-in ablation study must declare.
+EXTENDED_POLICY_IDS: tuple[str, ...] = REQUIRED_POLICY_IDS + ABLATION_POLICY_IDS
+
+#: The three artifact-backed panel identities, in canonical order. ``bayesian``
+#: is the full artifact; the other two are the ablations.
+ARTIFACT_POLICY_IDS: tuple[str, ...] = (
+    "bayesian",
+    "bayesian_no_belief",
+    "bayesian_no_strategic",
+)
+
+#: Canonical variant for each panel identity that consumes an artifact.
+ABLATION_VARIANT_BY_POLICY_ID: dict[str, str] = {
+    "bayesian": FULL_VARIANT,
+    "bayesian_no_belief": NO_BELIEF_VARIANT,
+    "bayesian_no_strategic": NO_STRATEGIC_VARIANT,
+}
 
 #: Expected aggregation config ``kind`` for each stable policy id. Identity and
 #: aggregation kind are cross-checked so a panel cannot mislabel a policy.
@@ -150,7 +201,13 @@ _POLICY_KINDS: dict[str, str] = {
     "trust_weighted": "trust_weighted",
     "balance": "balance",
     "bayesian": "bayesian",
+    "bayesian_no_belief": "bayesian",
+    "bayesian_no_strategic": "bayesian",
 }
+
+#: Lowercase SHA-256 hex, the only accepted digest format for pinned ablated
+#: artifact and matched calibration-input identities.
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 #: D028 pinned BALANCE citation (Fang et al., ACM CCS 2024, arXiv:2406.10416v4,
 #: Algorithm 3). A BALANCE panel entry must reproduce these fields exactly.
@@ -210,25 +267,32 @@ def _validate_seed_tuple(seeds, *, label: str = "seeds") -> tuple[int, ...]:
 
 
 def _validate_panel_budget(study) -> None:
-    """Validate the six-policy panel and its matched-budget provenance.
+    """Validate the six/eight-policy panel and its matched-budget provenance.
 
-    Shared by the baseline and held-out top-level validators; extracted
-    verbatim from the S01 :class:`BaselineStudyConfig` contract so S01 behavior
-    is byte-for-byte unchanged.
+    Without an :class:`AblationStudyContract` exactly the six canonical
+    :data:`REQUIRED_POLICY_IDS` are required and the S01 behavior is
+    byte-for-byte unchanged. With the opt-in contract the panel must declare
+    exactly the eight :data:`EXTENDED_POLICY_IDS`; the three artifact-backed
+    Bayesian entries must point at distinct artifact directories, so a reused
+    or swapped artifact path cannot masquerade as a matched triple.
     """
 
+    ablations = getattr(study, "ablations", None)
+    expected_ids = (
+        EXTENDED_POLICY_IDS if ablations is not None else REQUIRED_POLICY_IDS
+    )
     ids = tuple(entry.id for entry in study.panel)
-    if len(ids) != len(REQUIRED_POLICY_IDS):
+    if len(ids) != len(expected_ids):
         raise ValueError(
             "panel must declare exactly the "
-            f"{len(REQUIRED_POLICY_IDS)} required policies "
-            f"{REQUIRED_POLICY_IDS!r}, got {ids!r}"
+            f"{len(expected_ids)} required policies "
+            f"{expected_ids!r}, got {ids!r}"
         )
     if len(set(ids)) != len(ids):
         raise ValueError(f"panel policy ids must be unique, got {ids!r}")
-    if set(ids) != set(REQUIRED_POLICY_IDS):
-        missing = sorted(set(REQUIRED_POLICY_IDS) - set(ids))
-        extra = sorted(set(ids) - set(REQUIRED_POLICY_IDS))
+    if set(ids) != set(expected_ids):
+        missing = sorted(set(expected_ids) - set(ids))
+        extra = sorted(set(ids) - set(expected_ids))
         raise ValueError(
             f"panel policy set mismatch (missing={missing}, unexpected={extra})"
         )
@@ -264,6 +328,18 @@ def _validate_panel_budget(study) -> None:
                     f"parameter-free policy {entry.id!r} must declare "
                     "exempt tuning provenance"
                 )
+
+    if ablations is not None:
+        artifact_dirs = tuple(
+            entry.aggregation.artifact_dir
+            for entry in study.panel
+            if entry.id in ABLATION_VARIANT_BY_POLICY_ID
+        )
+        if len(set(artifact_dirs)) != len(artifact_dirs):
+            raise ValueError(
+                "ablation panel must reference distinct artifact directories "
+                "for the full/no_belief/no_strategic artifacts"
+            )
 
 
 def _validate_study_content(study) -> None:
@@ -368,9 +444,10 @@ class TuningProvenance(_StrictStudyModel):
 class PanelPolicy(_StrictStudyModel):
     """One baseline identity in the study panel.
 
-    ``id`` is a stable identifier from :data:`REQUIRED_POLICY_IDS` and must
-    agree with the ``aggregation`` selector's ``kind``. ``implementation`` is a
-    bounded human-readable label, ``citation`` carries the reproduction/version
+    ``id`` is a stable identifier from :data:`REQUIRED_POLICY_IDS` (or, when
+    an :class:`AblationStudyContract` is present, from :data:`EXTENDED_POLICY_IDS`)
+    and must agree with the ``aggregation`` selector's ``kind``. ``implementation``
+    is a bounded human-readable label, ``citation`` carries the reproduction/version
     metadata, and ``tuning`` carries the matched-budget provenance.
     """
 
@@ -413,6 +490,77 @@ class PanelPolicy(_StrictStudyModel):
         return self
 
 
+class AblationArtifactPin(_StrictStudyModel):
+    """One pinned expected aggregate digest for a calibration variant (R021).
+
+    The digest is the artifact's own schema-v1 ``aggregate_digest``; it binds
+    the exact published tables and assumptions the study was frozen against.
+    The artifact path is deliberately *not* duplicated here: the matching panel
+    entry already carries ``artifact_dir``.
+    """
+
+    variant: Literal["full", "no_belief", "no_strategic"]
+    expected_aggregate_digest: str
+
+    @field_validator("expected_aggregate_digest")
+    @classmethod
+    def _valid_aggregate_digest(cls, value: str) -> str:
+        if _SHA256_RE.match(value) is None:
+            raise ValueError(
+                "expected_aggregate_digest must be a lowercase SHA-256 hex "
+                "string"
+            )
+        return value
+
+
+class AblationStudyContract(_StrictStudyModel):
+    """Opt-in matched-ablation contract for the eight-policy panel (R021).
+
+    Requires exactly one pinned aggregate digest for each of the ``full``,
+    ``no_belief`` and ``no_strategic`` artifacts plus one pinned
+    ``matched_calibration_input_digest`` (the shared, variant-normalized
+    calibration input identity). It carries no artifact paths, so a study
+    cannot declare a second, conflicting pointer to the same artifact.
+    """
+
+    matched_calibration_input_digest: str
+    expected_aggregate_digests: Annotated[
+        tuple[AblationArtifactPin, ...], BeforeValidator(_as_tuple)
+    ]
+
+    @field_validator("matched_calibration_input_digest")
+    @classmethod
+    def _valid_matched_digest(cls, value: str) -> str:
+        if _SHA256_RE.match(value) is None:
+            raise ValueError(
+                "matched_calibration_input_digest must be a lowercase "
+                "SHA-256 hex string"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _complete_distinct_variants(self) -> "AblationStudyContract":
+        variants = tuple(pin.variant for pin in self.expected_aggregate_digests)
+        if len(variants) != len(set(variants)):
+            raise ValueError(
+                "expected_aggregate_digests must pin each variant at most once"
+            )
+        if set(variants) != set(CALIBRATION_VARIANTS):
+            raise ValueError(
+                "expected_aggregate_digests must pin exactly one digest for "
+                "each of full, no_belief and no_strategic"
+            )
+        return self
+
+    def expected_digest(self, variant: str) -> str:
+        """Return the pinned aggregate digest for ``variant``."""
+
+        for pin in self.expected_aggregate_digests:
+            if pin.variant == variant:
+                return pin.expected_aggregate_digest
+        raise KeyError(variant)
+
+
 class BaselineStudyConfig(_StrictStudyModel):
     """Top-level strict baseline-study envelope (R017/S01).
 
@@ -428,6 +576,13 @@ class BaselineStudyConfig(_StrictStudyModel):
     ``candidate_budget`` / ``selection_seed`` / ``selection_provenance`` are the
     single matched tuning budget every tunable policy must declare; each
     parameter-free policy must instead declare ``exempt`` with a zero budget.
+
+    ``ablations`` is the optional opt-in matched-ablation contract (R021). When
+    absent the panel must be exactly the six S01 identities and the canonical
+    payload is byte-for-byte what it was before this field existed (the
+    serializer omits an absent contract rather than emitting a null key). When
+    present the panel must be exactly the eight identities and the three
+    artifact-backed entries must reference distinct, digest-pinned artifacts.
     """
 
     study_id: str = Field(min_length=1, max_length=MAX_STUDY_ID_LEN)
@@ -438,6 +593,7 @@ class BaselineStudyConfig(_StrictStudyModel):
     selection_seed: int = Field(ge=0, le=MAX_SEED)
     selection_provenance: str = Field(min_length=1, max_length=MAX_LABEL_LEN)
     panel: Annotated[tuple[PanelPolicy, ...], BeforeValidator(_as_tuple)]
+    ablations: AblationStudyContract | None = None
 
     @field_validator("study_id")
     @classmethod
@@ -452,17 +608,35 @@ class BaselineStudyConfig(_StrictStudyModel):
             )
         return value
 
+    @model_serializer(mode="wrap")
+    def _omit_absent_ablations(self, handler, info):
+        """Serialize without a null ``ablations`` key (legacy canonical form)."""
+
+        data = handler(self)
+        if self.ablations is None:
+            data.pop("ablations", None)
+        return data
+
     @model_validator(mode="after")
     def _validate_study(self) -> "BaselineStudyConfig":
         _validate_study_content(self)
         return self
 
-    # -- deterministic ordering helper ------------------------------------- #
+    # -- deterministic ordering helpers ------------------------------------ #
+    def policy_ids(self) -> tuple[str, ...]:
+        """The ordered panel identity set for this study (six or eight ids)."""
+
+        return (
+            EXTENDED_POLICY_IDS
+            if self.ablations is not None
+            else REQUIRED_POLICY_IDS
+        )
+
     def ordered_panel(self) -> tuple[PanelPolicy, ...]:
-        """The panel in the canonical :data:`REQUIRED_POLICY_IDS` order."""
+        """The panel in canonical (six- or eight-identity) order."""
 
         by_id = {entry.id: entry for entry in self.panel}
-        return tuple(by_id[policy_id] for policy_id in REQUIRED_POLICY_IDS)
+        return tuple(by_id[policy_id] for policy_id in self.policy_ids())
 
 
 class NamedSchedule(_StrictStudyModel):
