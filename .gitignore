@@ -1,4 +1,5 @@
 runs/
+data/
 # ── GSD baseline (auto-generated) ──
 .gsd
 .gsd-worktrees/

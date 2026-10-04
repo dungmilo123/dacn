@@ -225,7 +225,6 @@ def _write_cell_trace(
     destination: Path,
     *,
     config,
-    kappa_sequence,
     final_accuracy: float,
     final_loss: float,
 ) -> None:
@@ -233,15 +232,23 @@ def _write_cell_trace(
     nodes = tuple(sorted(int(node) for node in topology.nodes()))
     compromised = config.attack.compromised_node
     rounds = int(config.rounds)
+    # Schema-v1 traces snapshot the *static* study attack: the runtime
+    # controller applies the per-round schedule without mutating the frozen
+    # config, so the traced node attack is constant across rounds (matching
+    # production and the S02 metric-trace fixture).
+    base_kappa = float(config.attack.kappa) if compromised is not None else 0.0
+    if base_kappa <= 0.0:
+        base_kappa = 0.0
+    base_kind = "delta_reversal" if base_kappa > 0.0 else "none"
     initial = {node: {"weight": np.array([float(node), 0.0])} for node in nodes}
     rounds_data = []
     for index in range(rounds):
         is_final = index == rounds - 1
-        kappa = float(kappa_sequence[index])
         evaluations = []
         for node in nodes:
             attacker = compromised is not None and node == int(compromised)
-            node_kappa = kappa if attacker else 0.0
+            node_kappa = base_kappa if attacker else 0.0
+            node_kind = base_kind if attacker else "none"
             participants = (node,) + tuple(
                 sorted(int(neighbour) for neighbour in topology.neighbors(node))
             )
@@ -252,10 +259,7 @@ def _write_cell_trace(
                     accuracy=float(final_accuracy if is_final else 0.0),
                     sample_count=4,
                     true_type="malicious" if attacker else "benign",
-                    attack=AttackAction(
-                        kind="delta_reversal" if node_kappa > 0.0 else "none",
-                        kappa=node_kappa,
-                    ),
+                    attack=AttackAction(kind=node_kind, kappa=node_kappa),
                     participant_ids=participants,
                     multipliers=tuple(1.0 for _ in participants),
                     weights=tuple(1.0 / len(participants) for _ in participants),
@@ -369,11 +373,6 @@ def _build_selection(section: SimpleNamespace) -> dict:
             for policy_id in EXTENDED_POLICY_IDS:
                 policy = panel[policy_id]
                 schedule = schedules[schedule_id]
-                kappa = realized_kappa_sequence(
-                    schedule.schedule,
-                    rounds,
-                    derive_schedule_seed(seed, schedule.schedule),
-                )
                 _write_cell_trace(
                     section.selection_dir
                     / "traces"
@@ -381,7 +380,6 @@ def _build_selection(section: SimpleNamespace) -> dict:
                     / policy_id
                     / f"seed-{seed}",
                     config=build_cell_config(study.study.base, policy.aggregation, seed),
-                    kappa_sequence=kappa,
                     final_accuracy=0.5,
                     final_loss=1.0,
                 )
@@ -434,11 +432,6 @@ def _build_final(section: SimpleNamespace, selection_manifest: dict) -> dict:
             for policy_id in EXTENDED_POLICY_IDS:
                 policy = panel[policy_id]
                 schedule = schedules[schedule_id]
-                kappa = realized_kappa_sequence(
-                    schedule.schedule,
-                    rounds,
-                    derive_schedule_seed(seed, schedule.schedule),
-                )
                 accuracy = _accuracy(schedule_id, policy_id, seed, rank)
                 node_count = len(load_topology(study.study.base).nodes())
                 _write_cell_trace(
@@ -448,7 +441,6 @@ def _build_final(section: SimpleNamespace, selection_manifest: dict) -> dict:
                     / policy_id
                     / f"seed-{seed}",
                     config=build_cell_config(study.study.base, policy.aggregation, seed),
-                    kappa_sequence=kappa,
                     final_accuracy=accuracy,
                     final_loss=1.0 if schedule_id == _HAND_SCHEDULE else 2.0,
                 )
@@ -700,6 +692,40 @@ def test_missing_selection_trace_fails_closed(tree):
     with _missing_dir(trace_dir):
         with pytest.raises(HeadlineVerifyError):
             verify_headline(tree.root, deps=_deps(), write=False)
+
+
+def test_trace_attack_mismatch_fails_closed(tree):
+    """A trace asserting a non-base static attack is rejected.
+
+    schema-v1 traces snapshot the study's *static* base attack (the runtime
+    schedule is applied without mutating the frozen config), so the verifier
+    must reject a trace whose declared attack disagrees with that base.
+    """
+
+    policy_id = "plain_average"
+    seed = 1101
+    schedule_id = "duty_cycle"
+    trace_dir = (
+        tree.selection_dir / "traces" / schedule_id / policy_id / f"seed-{seed}"
+    )
+    panel = {entry.id: entry for entry in tree.study.study.panel}
+    config = build_cell_config(
+        tree.study.study.base, panel[policy_id].aggregation, seed
+    )
+    # Same compromised node, but a non-base intensity: only the traced attack
+    # declaration differs, so the base-attack check is what must fire.
+    weakened = config.model_copy(
+        update={
+            "attack": config.attack.model_copy(update={"intensity": "weak"})
+        }
+    )
+    shutil.rmtree(trace_dir)
+    _write_cell_trace(
+        trace_dir, config=weakened, final_accuracy=0.5, final_loss=1.0
+    )
+    with pytest.raises(HeadlineVerifyError) as info:
+        verify_headline(tree.root, deps=_deps(), write=False)
+    assert "trace attack disagrees with the study base attack" in str(info.value)
 
 
 def test_foreign_trace_path_fails_closed(tree):

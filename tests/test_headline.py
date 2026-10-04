@@ -29,6 +29,7 @@ from dfl_sim.bayesian_artifact import (
 )
 from dfl_sim.evaluation_config import (
     EXTENDED_POLICY_IDS,
+    BaselineStudyConfig,
     load_held_out_study_config,
 )
 from dfl_sim.headline import (
@@ -562,6 +563,36 @@ def test_run_headline_happy_path(tmp_path):
     assert spec.study.policy_ids() == EXTENDED_POLICY_IDS
     assert tuple(spec.study.seeds) == SELECTION_SEEDS
     assert tuple(spec.final_seeds) == FINAL_SEEDS
+
+
+def test_run_headline_preflight_receives_baseline_study(tmp_path):
+    """Regression: the S03 preflight must receive the *inner* baseline study.
+
+    The headline protocol wraps its :class:`BaselineStudyConfig` inside a
+    :class:`HeldOutStudyConfig`. ``preflight_ablation_study`` rejects the
+    wrapper (``_require_contract`` -> ``study_type``), so the runner must pass
+    ``study.study``. This records the injected seam's argument offline so the
+    real downloaded-data run is not the only place the shape is exercised.
+    """
+
+    seen: list[object] = []
+
+    def recording_preflight(study):
+        seen.append(study)
+        return None
+
+    output = tmp_path / "headline"
+    run_headline(
+        HEADLINE_CONFIG,
+        output,
+        data_root=tmp_path / "cache",
+        deps=_deps(_FakeStageRunner(), preflight=recording_preflight),
+    )
+
+    assert len(seen) == 1
+    assert isinstance(seen[0], BaselineStudyConfig)
+    assert seen[0].ablations is not None
+    assert len(seen[0].ablations.expected_aggregate_digests) == 3
 
 
 def test_run_headline_invokes_audit_after_evaluate(tmp_path):

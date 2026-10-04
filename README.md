@@ -473,6 +473,117 @@ MNIST-shaped fixtures (no network), then shows a deliberate mismatch rejected
 before any cell runs. Actual downloaded-MNIST execution is S04 evidence, and the
 canonical report figures/cost framing are S05; neither is claimed here.
 
+## Real MNIST headline (M003/S04)
+
+The M003/S04 headline is the first end-to-end M003 run on **actually downloaded**
+MNIST (not an injected MNIST-shaped fixture). It verifies/leases an
+integrity-checked cache, runs the three matched derivations through the public
+`dfl calibrate` path, pins and preflights an eight-policy held-out study, runs
+the public `dfl evaluate` path, and only publishes acceptance after an
+independent on-disk audit. It is raw headline evidence, not the S05 report.
+
+### Reproduce from scratch (fresh output root)
+
+```bash
+# 1. Provision + integrity-check the real cache (downloads ~11 MB; no secrets).
+uv run python -m dfl_sim.mnist_provision --data-root data
+# Equivalent explicit interpreter: .venv/bin/python -m dfl_sim.mnist_provision --data-root data
+
+# 2. Run the frozen headline into a *fresh* output root (must not exist).
+uv run python -m dfl_sim.headline configs/headline_mnist.yaml \
+    --output runs/m003-mnist-headline
+
+# 3. Independently re-audit the artifacts and (re)publish headline-evidence.json.
+uv run python -m dfl_sim.headline_verify runs/m003-mnist-headline
+
+# 4. Replay any published trace with the ordinary viewer.
+uv run dfl view runs/m003-mnist-headline/study/final/traces/held_out/bayesian/seed-2101
+```
+
+### Frozen protocol and bounds
+
+`configs/headline_mnist.yaml` is the checked-in source protocol;
+`configs/calibrate_headline_mnist.yaml` is the single calibration source behind
+all three variants. Bounds (D038):
+
+* IID **chain3**, **6 rounds**, bitwise small-CNN, CPU, `threads: 1`.
+* Training subset **64 samples/node** over 3 nodes; evaluation subset **128 samples**.
+* Calibration **32 episodes**, design split 16, `p0=0.5`, mixture `(0, 2, 5)`
+  (zero/weak/strong), calibration seed `20240101`.
+* Panel of **8 policies**: `local_only`, `plain_average`, `fixed_similarity`,
+  `trust_weighted`, `balance`, `bayesian`, `bayesian_no_belief`,
+  `bayesian_no_strategic`.
+* Schedules: four named known schedules (`duty_cycle`, `periodic`,
+  `delayed_onset`, `random`) that together cover the zero/weak/strong
+  intensities, plus the reserved **final-only** `held_out` schedule.
+* Seeds: selection `[1101, 1102]`, final `[2101, 2102, 2103]` — disjoint from
+  each other and from the calibration seed.
+* **Singleton matched budget**: `candidate_budget: 1` for every tunable policy
+  (a single predeclared candidate, not a hyperparameter search or winner claim).
+
+Matrix: 2 selection seeds x 4 schedules x 8 policies = **64 selection cells**;
+3 final seeds x 5 schedules x 8 policies = **120 final cells**; **40** final
+aggregates.
+
+### Output tree, provenance and failure/recovery markers
+
+```
+runs/m003-mnist-headline/
+  frozen-protocol.json        # resolved spec + cache identity + seed split + budget
+  mnist-provenance.json       # data root, manifest/preprocessing digests, split ids
+  frozen-study.yaml           # digest-pinned HeldOutStudyConfig (8 policies)
+  calibration/{full,no_belief,no_strategic}/{manifest,likelihood,payoff}.json
+  study/selection/selection-manifest.json
+  study/final/final-manifest.json
+  study/robustness-summary.json
+  headline-evidence.json      # independent audit acceptance (schema v1)
+  diagnostics/{calibrate-*.json,evaluate.json}   # per-stage argv/returncode/duration
+```
+
+The downloaded cache lives under `data/` (`data/MNIST/raw/...` plus
+`data/mnist-provision.json`). Both `data/` and `runs/` are **gitignored local
+artifacts**; downloaded data is never checked into source, and reproduction uses
+a fresh output root rather than committing the cache or the run tree.
+
+Provenance is bound to content, not a string. The cache identity is the SHA-256
+of the raw IDX bytes and the decoded tensors, plus the upstream archive MD5,
+canonical counts (60000/10000), shape, label bounds and a preprocessing digest.
+The three calibration artifacts share one `matched_calibration_input_digest`
+while carrying distinct variant identities, and `headline-evidence.json`
+re-binds the cache, calibration, frozen study and recomputed per-cell trace
+digests.
+
+**No injected fallback.** Provisioning either downloads and integrity-checks the
+real cache or fails closed; the calibration and study commands run with
+`download: false` against the leased, revalidated cache. A missing or corrupt
+cache, a mismatched artifact, a mismatched trace, or a failed audit produces a
+bounded `dfl_sim: error: ...` line on stderr and a nonzero exit, and publishes no
+acceptance record. On failure the raw study artifacts remain for diagnosis;
+recovery is a fresh output root (or `--no-download` reuse of a verified cache),
+and reverification is the separate `headline_verify` command, never a rerun of
+the creation command over an existing output.
+
+### Honest interpretation and evidence class
+
+On the actual run the eight policies were effectively **flat** (mean accuracy
+~0.118 across schedules/seeds; `plain_average`/`trust_weighted` ~0.132;
+full/no-belief/no-strategic ~0.118). That is reported as **no measured
+contribution from the belief/strategic components on this bounded subset**, with
+no improvement claim. The `no_strategic` variant uses a **fixed `kappa=5`**
+attacker, so it is a fixed-mixture/fixed-behavior isolation, not a
+strategic-response optimizer.
+
+`headline-evidence.json` is the S05 hand-off: it carries the real-data identity,
+the matched calibration derivation provenance, the frozen scope and the
+explicit limitations. S05 may consume it together with `frozen-protocol.json`,
+`mnist-provenance.json`, `study/final/final-manifest.json` and
+`study/robustness-summary.json`, but must not present this **IID chain3 bounded
+subset** as non-IID, topology, cost or wide parameter-sweep evidence, as proof
+of calibration-derivation validity or strategic optimization, or as the
+canonical figure/report product (that is S05). Equal or poor outcomes are
+honest evidence.
+
+
 ## Testing
 
 Run the ordinary offline suite (no browser binary required):

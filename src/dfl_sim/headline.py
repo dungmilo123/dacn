@@ -1239,7 +1239,12 @@ def run_headline(
 
             study = build_study(protocol, destination, artifacts)
             try:
-                preflight(study)
+                # The S03 matched-artifact preflight validates the *baseline*
+                # study (its panel + ablation contract), exactly as the
+                # production ``dfl evaluate`` path does. ``HeldOutStudyConfig``
+                # wraps that baseline as ``.study``; passing the wrapper
+                # unchanged is rejected by ``_require_contract``.
+                preflight(study.study)
             except AblationEvaluationError as exc:
                 raise HeadlineError(
                     f"matched-artifact preflight failed closed: {_bounded(exc)}"

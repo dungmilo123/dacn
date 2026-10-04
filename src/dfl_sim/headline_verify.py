@@ -689,7 +689,6 @@ def _verify_trace(
     policy_id: str,
     seed: int,
     schedule: Any,
-    realized: tuple[float, ...],
     deps: HeadlineVerifyDeps,
     label: str,
 ) -> dict[str, Any]:
@@ -746,8 +745,22 @@ def _verify_trace(
             events = tuple(events)
             _require(events, f"{label} trace has no evaluated rounds")
             compromised = base.attack.compromised_node
-            trace_kappa: list[float] = []
+            # A schema-v1 trace snapshots the *static* study attack: the
+            # per-round controller schedule is applied at runtime without
+            # mutating the frozen config (see ``attack_schedule``). The
+            # controller-derived realized sequence is validated against the
+            # frozen schedule at the manifest level (_verify_entry_common);
+            # here we independently confirm every traced round declares the
+            # study's base attack for the compromised node.
+            base_kappa = (
+                float(base.attack.kappa) if compromised is not None else 0.0
+            )
+            if base_kappa <= 0.0:
+                base_kappa = 0.0
+            base_kind = "delta_reversal" if base_kappa > 0.0 else "none"
             for event in events:
+                if compromised is None:
+                    continue
                 nodes = event.get("nodes")
                 _require(isinstance(nodes, Sequence) and nodes, f"{label} trace round has no nodes")
                 match_node = None
@@ -756,11 +769,13 @@ def _verify_trace(
                         match_node = node
                         break
                 _require(match_node is not None, f"{label} trace is missing the compromised node")
-                trace_kappa.append(float(match_node["attack"]["kappa"]))
-            _require(
-                tuple(trace_kappa) == realized,
-                f"{label} trace realized attack disagrees with the manifest",
-            )
+                attack = match_node.get("attack")
+                _require(
+                    isinstance(attack, Mapping)
+                    and str(attack.get("kind")) == base_kind
+                    and float(attack.get("kappa")) == base_kappa,
+                    f"{label} trace attack disagrees with the study base attack",
+                )
     except HeadlineVerifyError:
         raise
     except (TrajectoryError, OSError, TypeError, ValueError, KeyError) as exc:
@@ -830,7 +845,6 @@ def _verify_cells(
                 policy_id=policy_id,
                 seed=seed,
                 schedule=schedule,
-                realized=realized,
                 deps=deps,
                 label=cell_label,
             )
