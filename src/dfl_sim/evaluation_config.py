@@ -46,6 +46,12 @@ from pydantic import (
     model_validator,
 )
 
+from .attack_schedule import (
+    ScheduleConfig,
+    intensity_name,
+    realized_kappa_sequence,
+    schedule_digest,
+)
 from .config import (
     MAX_SEED,
     AggregationConfig,
@@ -57,19 +63,34 @@ from .config import (
 __all__ = [
     "BALANCE_CITATION",
     "MAX_CANDIDATE_BUDGET",
+    "MAX_KNOWN_SCHEDULES",
     "MAX_STUDY_ID_LEN",
     "MAX_STUDY_SEEDS",
+    "MIN_TOTAL_SEEDS_INJECTED",
+    "MIN_TOTAL_SEEDS_REAL_MNIST",
     "REQUIRED_POLICY_IDS",
     "BaselineStudyConfig",
     "BaselineStudyConfigError",
     "CitationMetadata",
+    "HeldOutStudyConfig",
+    "HeldOutStudyConfigError",
+    "NamedSchedule",
     "PanelPolicy",
+    "SelectionSpec",
     "TuningProvenance",
+    "held_out_study_digest",
+    "held_out_study_identity_payload",
     "hyperparameter_digest",
+    "load_any_study_config",
+    "load_held_out_study_config",
     "load_study_config",
+    "parse_held_out_study_text",
     "parse_study_text",
     "policy_identity",
     "selected_hyperparameters",
+    "selection_identity_payload",
+    "selection_projection",
+    "selection_spec_digest",
     "study_digest",
     "study_identity_payload",
 ]
@@ -89,6 +110,14 @@ MAX_LABEL_LEN = 256
 
 #: Maximum number of tuning candidates a single study may declare.
 MAX_CANDIDATE_BUDGET = 4096
+
+#: Maximum number of named adaptive schedules a held-out study may carry.
+MAX_KNOWN_SCHEDULES = 16
+
+#: R022 seed floors: paired selection + final seeds must total at least these
+#: counts (five for injected provenance, three for real MNIST data).
+MIN_TOTAL_SEEDS_INJECTED = 5
+MIN_TOTAL_SEEDS_REAL_MNIST = 3
 
 #: Maximum rendered error-message length (Q3 bounded diagnostics).
 MAX_ERROR_TEXT = 400
@@ -140,6 +169,10 @@ class BaselineStudyConfigError(ConfigError):
     """Raised when a baseline-study YAML/JSON spec is missing or invalid."""
 
 
+class HeldOutStudyConfigError(BaselineStudyConfigError):
+    """Raised when a held-out study YAML/JSON spec is missing or invalid."""
+
+
 def _as_tuple(value: object) -> object:
     """Convert JSON/YAML lists to tuples before strict tuple validation."""
 
@@ -149,6 +182,108 @@ def _as_tuple(value: object) -> object:
 
 
 SeedTuple = Annotated[tuple[int, ...], BeforeValidator(_as_tuple)]
+
+
+def _validate_seed_tuple(seeds, *, label: str = "seeds") -> tuple[int, ...]:
+    """Validate a bounded, unique, in-range seed tuple.
+
+    Shared by the S01 baseline study (``seeds``) and the S02 held-out study
+    (``final_seeds``) so both top-level validators enforce the identical seed
+    contract without duplicating the bounds.
+    """
+
+    values = tuple(seeds)
+    if not values:
+        raise ValueError(f"{label} must declare at least one seed")
+    if len(values) > MAX_STUDY_SEEDS:
+        raise ValueError(
+            f"{label} declare {len(values)} entries, limit is {MAX_STUDY_SEEDS}"
+        )
+    if len(set(values)) != len(values):
+        raise ValueError(f"{label} must be unique")
+    for seed in values:
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ValueError(f"{label} must be integers, got {seed!r}")
+        if not 0 <= seed <= MAX_SEED:
+            raise ValueError(f"seed {seed!r} is outside [0, {MAX_SEED}]")
+    return values
+
+
+def _validate_panel_budget(study) -> None:
+    """Validate the six-policy panel and its matched-budget provenance.
+
+    Shared by the baseline and held-out top-level validators; extracted
+    verbatim from the S01 :class:`BaselineStudyConfig` contract so S01 behavior
+    is byte-for-byte unchanged.
+    """
+
+    ids = tuple(entry.id for entry in study.panel)
+    if len(ids) != len(REQUIRED_POLICY_IDS):
+        raise ValueError(
+            "panel must declare exactly the "
+            f"{len(REQUIRED_POLICY_IDS)} required policies "
+            f"{REQUIRED_POLICY_IDS!r}, got {ids!r}"
+        )
+    if len(set(ids)) != len(ids):
+        raise ValueError(f"panel policy ids must be unique, got {ids!r}")
+    if set(ids) != set(REQUIRED_POLICY_IDS):
+        missing = sorted(set(REQUIRED_POLICY_IDS) - set(ids))
+        extra = sorted(set(ids) - set(REQUIRED_POLICY_IDS))
+        raise ValueError(
+            f"panel policy set mismatch (missing={missing}, unexpected={extra})"
+        )
+
+    for entry in study.panel:
+        tuning = entry.tuning
+        if entry.id in _TUNABLE_POLICY_IDS:
+            if tuning.mode != "tuned":
+                raise ValueError(
+                    f"tunable policy {entry.id!r} must declare tuned "
+                    "tuning provenance"
+                )
+            if tuning.candidate_budget != study.candidate_budget:
+                raise ValueError(
+                    f"policy {entry.id!r} candidate_budget "
+                    f"{tuning.candidate_budget!r} does not match the study "
+                    f"matched budget {study.candidate_budget!r}"
+                )
+            if tuning.selection_seed != study.selection_seed:
+                raise ValueError(
+                    f"policy {entry.id!r} selection_seed "
+                    f"{tuning.selection_seed!r} does not match the study "
+                    f"selection seed {study.selection_seed!r}"
+                )
+            if tuning.selection_provenance != study.selection_provenance:
+                raise ValueError(
+                    f"policy {entry.id!r} selection_provenance does not "
+                    "match the study selection provenance"
+                )
+        elif entry.id in _PARAMETER_FREE_POLICY_IDS:
+            if tuning.mode != "exempt":
+                raise ValueError(
+                    f"parameter-free policy {entry.id!r} must declare "
+                    "exempt tuning provenance"
+                )
+
+
+def _validate_study_content(study) -> None:
+    """Validate base provenance, seeds, panel, and budget for a study.
+
+    Shared by :class:`BaselineStudyConfig` and :class:`HeldOutStudyConfig` so
+    both top-level validators enforce the same study contract.
+    """
+
+    if not isinstance(study.base.aggregation, PlainAverageAggregation):
+        raise ValueError(
+            "base.aggregation must be plain_average; every panel entry "
+            "overrides it per cell"
+        )
+    if study.data_provenance == "injected" and study.base.data.download:
+        raise ValueError(
+            "data_provenance 'injected' requires base.data.download false"
+        )
+    _validate_seed_tuple(study.seeds, label="seeds")
+    _validate_panel_budget(study)
 
 
 class _StrictStudyModel(BaseModel):
@@ -319,80 +454,7 @@ class BaselineStudyConfig(_StrictStudyModel):
 
     @model_validator(mode="after")
     def _validate_study(self) -> "BaselineStudyConfig":
-        if not isinstance(self.base.aggregation, PlainAverageAggregation):
-            raise ValueError(
-                "base.aggregation must be plain_average; every panel entry "
-                "overrides it per cell"
-            )
-        if self.data_provenance == "injected" and self.base.data.download:
-            raise ValueError(
-                "data_provenance 'injected' requires base.data.download false"
-            )
-
-        seeds = tuple(self.seeds)
-        if not seeds:
-            raise ValueError("seeds must declare at least one seed")
-        if len(seeds) > MAX_STUDY_SEEDS:
-            raise ValueError(
-                f"seeds declare {len(seeds)} entries, limit is {MAX_STUDY_SEEDS}"
-            )
-        if len(set(seeds)) != len(seeds):
-            raise ValueError("seeds must be unique")
-        for seed in seeds:
-            if isinstance(seed, bool) or not isinstance(seed, int):
-                raise ValueError(f"seeds must be integers, got {seed!r}")
-            if not 0 <= seed <= MAX_SEED:
-                raise ValueError(
-                    f"seed {seed!r} is outside [0, {MAX_SEED}]"
-                )
-
-        ids = tuple(entry.id for entry in self.panel)
-        if len(ids) != len(REQUIRED_POLICY_IDS):
-            raise ValueError(
-                "panel must declare exactly the "
-                f"{len(REQUIRED_POLICY_IDS)} required policies "
-                f"{REQUIRED_POLICY_IDS!r}, got {ids!r}"
-            )
-        if len(set(ids)) != len(ids):
-            raise ValueError(f"panel policy ids must be unique, got {ids!r}")
-        if set(ids) != set(REQUIRED_POLICY_IDS):
-            missing = sorted(set(REQUIRED_POLICY_IDS) - set(ids))
-            extra = sorted(set(ids) - set(REQUIRED_POLICY_IDS))
-            raise ValueError(
-                f"panel policy set mismatch (missing={missing}, unexpected={extra})"
-            )
-
-        for entry in self.panel:
-            tuning = entry.tuning
-            if entry.id in _TUNABLE_POLICY_IDS:
-                if tuning.mode != "tuned":
-                    raise ValueError(
-                        f"tunable policy {entry.id!r} must declare tuned "
-                        "tuning provenance"
-                    )
-                if tuning.candidate_budget != self.candidate_budget:
-                    raise ValueError(
-                        f"policy {entry.id!r} candidate_budget "
-                        f"{tuning.candidate_budget!r} does not match the study "
-                        f"matched budget {self.candidate_budget!r}"
-                    )
-                if tuning.selection_seed != self.selection_seed:
-                    raise ValueError(
-                        f"policy {entry.id!r} selection_seed "
-                        f"{tuning.selection_seed!r} does not match the study "
-                        f"selection seed {self.selection_seed!r}"
-                    )
-                if tuning.selection_provenance != self.selection_provenance:
-                    raise ValueError(
-                        f"policy {entry.id!r} selection_provenance does not "
-                        "match the study selection provenance"
-                    )
-            elif entry.id in _PARAMETER_FREE_POLICY_IDS:
-                if tuning.mode != "exempt":
-                    raise ValueError(
-                        f"parameter-free policy {entry.id!r} must declare "
-                        "exempt tuning provenance"
-                    )
+        _validate_study_content(self)
         return self
 
     # -- deterministic ordering helper ------------------------------------- #
@@ -401,6 +463,183 @@ class BaselineStudyConfig(_StrictStudyModel):
 
         by_id = {entry.id: entry for entry in self.panel}
         return tuple(by_id[policy_id] for policy_id in REQUIRED_POLICY_IDS)
+
+
+class NamedSchedule(_StrictStudyModel):
+    """A named adaptive attack schedule (R018/D033).
+
+    ``id`` is a bounded study-local label and ``schedule`` is a validated
+    :data:`~dfl_sim.attack_schedule.ScheduleConfig`. The name is what the
+    selection/final manifests record as ``schedule_id``.
+    """
+
+    id: str = Field(min_length=1, max_length=MAX_STUDY_ID_LEN)
+    schedule: ScheduleConfig
+
+    @field_validator("id")
+    @classmethod
+    def _safe_schedule_id(cls, value: str) -> str:
+        if not all(
+            character.islower() or character.isdigit() or character in "_-"
+            for character in value
+        ):
+            raise ValueError(
+                "schedule id must contain only lowercase letters, digits, "
+                "hyphens, and underscores"
+            )
+        return value
+
+
+class SelectionSpec(_StrictStudyModel):
+    """The selection-side projection of a held-out study (R018/R022).
+
+    Carries only the selection-phase content: the S01 baseline study (whose
+    ``seeds`` are the selection seeds) and the known adaptive schedules. It
+    deliberately has **no** ``final_seeds`` or ``held_out_schedule`` attribute,
+    so a selection runner typed to accept only a :class:`SelectionSpec` cannot
+    structurally read the final seeds or the reserved held-out schedule. That
+    is the milestone no-leak rule enforced at the type boundary, not by
+    convention.
+    """
+
+    study: BaselineStudyConfig
+    known_schedules: Annotated[
+        tuple[NamedSchedule, ...], BeforeValidator(_as_tuple)
+    ]
+
+    @model_validator(mode="after")
+    def _validate_selection(self) -> "SelectionSpec":
+        _validate_known_schedules(self.known_schedules)
+        return self
+
+
+class HeldOutStudyConfig(_StrictStudyModel):
+    """Top-level strict held-out study envelope (R018/R022, S02/T02).
+
+    Composes the S01 :class:`BaselineStudyConfig` as the field ``study``; its
+    ``seeds`` are the *selection-phase* seeds. Because
+    :func:`study_digest` operates on that nested study alone, the selection-side
+    digest covers only selection content and excludes ``final_seeds`` by
+    construction.
+
+    ``final_seeds`` are disjoint from ``study.seeds``. ``known_schedules`` are
+    the adaptive schedules the selection phase may build; ``held_out_schedule``
+    is the reserved unseen schedule that only the final phase may build. The
+    attack provenance must declare the compromised node and the peak realized
+    intensity, and the paired seed totals must satisfy the R022 floors.
+    """
+
+    study: BaselineStudyConfig
+    final_seeds: SeedTuple
+    known_schedules: Annotated[
+        tuple[NamedSchedule, ...], BeforeValidator(_as_tuple)
+    ]
+    held_out_schedule: NamedSchedule
+
+    @model_validator(mode="after")
+    def _validate_held_out(self) -> "HeldOutStudyConfig":
+        # Reuse the S01 study contract helper so both top-level validators
+        # enforce identical base/seed/panel/budget rules.
+        _validate_study_content(self.study)
+        _validate_known_schedules(self.known_schedules)
+
+        final_seeds = _validate_seed_tuple(self.final_seeds, label="final_seeds")
+        selection_seeds = tuple(self.study.seeds)
+
+        overlap = sorted(set(final_seeds) & set(selection_seeds))
+        if overlap:
+            raise ValueError(
+                "final_seeds must be disjoint from the selection seeds, "
+                f"overlap={overlap!r}"
+            )
+
+        held_out_id = self.held_out_schedule.id
+        known_ids = tuple(entry.id for entry in self.known_schedules)
+        if held_out_id in known_ids:
+            raise ValueError(
+                f"held_out schedule id {held_out_id!r} collides with a known "
+                f"schedule id {known_ids!r}"
+            )
+        known_digests = {
+            schedule_digest(entry.schedule) for entry in self.known_schedules
+        }
+        if schedule_digest(self.held_out_schedule.schedule) in known_digests:
+            raise ValueError(
+                "held_out schedule must be structurally distinct from every "
+                "known schedule"
+            )
+
+        attack = self.study.base.attack
+        if attack.compromised_node is None:
+            raise ValueError(
+                "study.base.attack.compromised_node must be set for an "
+                "adaptive held-out study"
+            )
+
+        rounds = self.study.base.rounds
+        # Coverage is a plan-level property, so it is checked under the
+        # canonical seed 0: periodic/duty/delayed schedules are seed-invariant,
+        # and a random schedule must still cover all three under this pinned
+        # draw. This keeps the coverage verdict deterministic and independent
+        # of any particular selection seed.
+        realized: set[str] = set()
+        peak_kappa = 0.0
+        for entry in self.known_schedules:
+            for kappa in realized_kappa_sequence(entry.schedule, rounds, 0):
+                realized.add(intensity_name(kappa))
+                peak_kappa = max(peak_kappa, kappa)
+        missing = sorted({"zero", "weak", "strong"} - realized)
+        if missing:
+            raise ValueError(
+                "known schedules must collectively realize zero, weak, and "
+                f"strong over {rounds} rounds; missing={missing!r}"
+            )
+        peak_name = intensity_name(peak_kappa)
+        if attack.intensity != peak_name:
+            raise ValueError(
+                f"study.base.attack.intensity {attack.intensity!r} does not "
+                f"match the peak realized intensity {peak_name!r}"
+            )
+
+        total_seeds = len(selection_seeds) + len(final_seeds)
+        floor = (
+            MIN_TOTAL_SEEDS_INJECTED
+            if self.study.data_provenance == "injected"
+            else MIN_TOTAL_SEEDS_REAL_MNIST
+        )
+        if total_seeds < floor:
+            raise ValueError(
+                f"{self.study.data_provenance} study declares {total_seeds} "
+                f"total selection+final seeds, need at least {floor}"
+            )
+        return self
+
+    def ordered_known_schedules(self) -> tuple[NamedSchedule, ...]:
+        """The known schedules sorted by id (deterministic iteration order)."""
+
+        return tuple(sorted(self.known_schedules, key=lambda entry: entry.id))
+
+
+def _validate_known_schedules(schedules) -> None:
+    """Validate a bounded, id-unique set of known adaptive schedules."""
+
+    values = tuple(schedules)
+    if not values:
+        raise ValueError("known_schedules must declare at least one schedule")
+    if len(values) > MAX_KNOWN_SCHEDULES:
+        raise ValueError(
+            f"known_schedules declares {len(values)} entries, limit is "
+            f"{MAX_KNOWN_SCHEDULES}"
+        )
+    ids = tuple(entry.id for entry in values)
+    if len(set(ids)) != len(ids):
+        raise ValueError(f"known schedule ids must be unique, got {ids!r}")
+    for entry in values:
+        if entry.schedule.kind == "held_out":
+            raise ValueError(
+                f"known schedule {entry.id!r} must not use the reserved "
+                "held_out kind"
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -478,6 +717,63 @@ def study_digest(study: BaselineStudyConfig) -> str:
     ).hexdigest()
 
 
+def selection_projection(study: HeldOutStudyConfig) -> SelectionSpec:
+    """Project a held-out study onto its selection-side content.
+
+    The result carries the nested selection study and the known schedules and
+    nothing else, so final seeds and the held-out schedule are structurally
+    unavailable during selection. This is the type-level enforcement of the
+    milestone no-leak rule (R018/R022).
+    """
+
+    if not isinstance(study, HeldOutStudyConfig):
+        raise HeldOutStudyConfigError(
+            "selection_projection requires a HeldOutStudyConfig, got "
+            f"{type(study).__name__}"
+        )
+    return SelectionSpec(
+        study=study.study, known_schedules=study.known_schedules
+    )
+
+
+def selection_identity_payload(selection: SelectionSpec) -> dict:
+    """Environment-independent canonical payload for a selection projection."""
+
+    if not isinstance(selection, SelectionSpec):
+        raise HeldOutStudyConfigError(
+            "selection_identity_payload requires a SelectionSpec, got "
+            f"{type(selection).__name__}"
+        )
+    return _scrub_artifact_paths(selection.model_dump(mode="json"))
+
+
+def selection_spec_digest(selection: SelectionSpec) -> str:
+    """SHA-256 over the selection-side projection (excludes final seeds)."""
+
+    return hashlib.sha256(
+        _canonical_bytes(selection_identity_payload(selection))
+    ).hexdigest()
+
+
+def held_out_study_identity_payload(study: HeldOutStudyConfig) -> dict:
+    """Environment-independent canonical payload for a held-out study."""
+
+    if not isinstance(study, HeldOutStudyConfig):
+        raise HeldOutStudyConfigError(
+            "held_out_study_identity_payload requires a HeldOutStudyConfig, "
+            f"got {type(study).__name__}"
+        )
+    return _scrub_artifact_paths(study.model_dump(mode="json"))
+
+
+def held_out_study_digest(study: HeldOutStudyConfig) -> str:
+    """SHA-256 over the full held-out study payload (selection + final)."""
+
+    return hashlib.sha256(
+        _canonical_bytes(held_out_study_identity_payload(study))
+    ).hexdigest()
+
+
 # --------------------------------------------------------------------------- #
 # Strict loader (JSON first, safe YAML fallback)
 # --------------------------------------------------------------------------- #
@@ -515,15 +811,8 @@ def _parse_structured(text: str, *, source: str) -> object:
     return raw
 
 
-def parse_study_text(
-    text: str, *, source: str = "<string>"
-) -> BaselineStudyConfig:
-    """Parse and validate canonical JSON (preferred) or safe YAML.
-
-    Raises :class:`BaselineStudyConfigError` with the source path and a bounded
-    offending-field summary on any malformed input, non-mapping root,
-    non-finite value, unknown key, unsafe tag, or invalid field.
-    """
+def _parse_mapping(text: str, *, source: str) -> dict:
+    """Parse structured text once and require a mapping root."""
 
     raw = _parse_structured(text, source=source)
     if raw is None:
@@ -535,6 +824,20 @@ def parse_study_text(
             f"study config root in {source} must be a mapping, got "
             f"{type(raw).__name__}"
         )
+    return raw
+
+
+def parse_study_text(
+    text: str, *, source: str = "<string>"
+) -> BaselineStudyConfig:
+    """Parse and validate canonical JSON (preferred) or safe YAML.
+
+    Raises :class:`BaselineStudyConfigError` with the source path and a bounded
+    offending-field summary on any malformed input, non-mapping root,
+    non-finite value, unknown key, unsafe tag, or invalid field.
+    """
+
+    raw = _parse_mapping(text, source=source)
     try:
         return BaselineStudyConfig.model_validate(raw)
     except ValidationError as exc:
@@ -543,14 +846,36 @@ def parse_study_text(
         ) from exc
 
 
-def load_study_config(path: str | os.PathLike[str]) -> BaselineStudyConfig:
-    """Read ``path`` from disk and validate it as a :class:`BaselineStudyConfig`."""
+def parse_held_out_study_text(
+    text: str, *, source: str = "<string>"
+) -> HeldOutStudyConfig:
+    """Parse and validate a held-out study as canonical JSON or safe YAML.
+
+    Raises :class:`HeldOutStudyConfigError` (a bounded subclass of
+    :class:`BaselineStudyConfigError`) on malformed/unsafe input or any invalid
+    field.
+    """
+
+    try:
+        raw = _parse_mapping(text, source=source)
+    except BaselineStudyConfigError as exc:
+        raise HeldOutStudyConfigError(str(exc)) from None
+    try:
+        return HeldOutStudyConfig.model_validate(raw)
+    except ValidationError as exc:
+        raise HeldOutStudyConfigError(
+            f"invalid held-out study config in {source}: {_bounded(str(exc))}"
+        ) from exc
+
+
+def _read_config_text(path: str | os.PathLike[str]) -> str:
+    """Read a config file, raising a bounded baseline error on any failure."""
 
     from pathlib import Path
 
     config_path = Path(path)
     try:
-        text = config_path.read_text(encoding="utf-8")
+        return config_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise BaselineStudyConfigError(
             f"study config file not found: {config_path}"
@@ -560,4 +885,51 @@ def load_study_config(path: str | os.PathLike[str]) -> BaselineStudyConfig:
             f"could not read study config file {config_path}: "
             f"{_bounded(str(exc))}"
         ) from exc
-    return parse_study_text(text, source=str(config_path))
+
+
+def load_study_config(path: str | os.PathLike[str]) -> BaselineStudyConfig:
+    """Read ``path`` from disk and validate it as a :class:`BaselineStudyConfig`."""
+
+    return parse_study_text(_read_config_text(path), source=str(path))
+
+
+def load_held_out_study_config(
+    path: str | os.PathLike[str],
+) -> HeldOutStudyConfig:
+    """Read ``path`` and validate it as a :class:`HeldOutStudyConfig`."""
+
+    try:
+        text = _read_config_text(path)
+    except BaselineStudyConfigError as exc:
+        raise HeldOutStudyConfigError(str(exc)) from None
+    return parse_held_out_study_text(text, source=str(path))
+
+
+def load_any_study_config(
+    path: str | os.PathLike[str],
+) -> BaselineStudyConfig | HeldOutStudyConfig:
+    """Read ``path`` once and dispatch to the baseline or held-out contract.
+
+    Structured text is parsed exactly once; the mapping is validated as a
+    :class:`BaselineStudyConfig` first, and only if that fails as a
+    :class:`HeldOutStudyConfig`. This keeps the S01 `dfl evaluate` baseline
+    path byte-identical while letting the CLI accept both spec kinds from one
+    loader.
+    """
+
+    text = _read_config_text(path)
+    try:
+        raw = _parse_mapping(text, source=str(path))
+    except BaselineStudyConfigError as exc:
+        raise BaselineStudyConfigError(str(exc)) from None
+    try:
+        return BaselineStudyConfig.model_validate(raw)
+    except ValidationError as baseline_exc:
+        try:
+            return HeldOutStudyConfig.model_validate(raw)
+        except ValidationError as held_exc:
+            raise BaselineStudyConfigError(
+                f"invalid study config in {path}: neither baseline nor "
+                f"held-out (baseline: {_bounded(str(baseline_exc))}; "
+                f"held-out: {_bounded(str(held_exc))})"
+            ) from None
