@@ -223,6 +223,48 @@ def test_build_calibrate_parser_requires_output() -> None:
     args = parser.parse_args(["config.yaml", "--output", "out"])
     assert args.config == "config.yaml"
     assert args.output == "out"
+    # ``--variant`` is optional and defaults to the config's own variant.
+    assert args.variant is None
+
+
+def test_build_calibrate_parser_accepts_variant_choices() -> None:
+    parser = build_calibrate_parser()
+    for variant in ("full", "no_belief", "no_strategic"):
+        args = parser.parse_args(
+            ["config.yaml", "--output", "out", "--variant", variant]
+        )
+        assert args.variant == variant
+    with pytest.raises(SystemExit) as info:
+        parser.parse_args(
+            ["config.yaml", "--output", "out", "--variant", "bogus"]
+        )
+    assert info.value.code == 2
+
+
+def test_cli_calibrate_variant_override_revalidates_through_model(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    # The same checked-in full config revalidated as ``no_belief`` publishes a
+    # loader-valid uniform-posterior artifact and keeps one success marker.
+    _patch_training_dataset(monkeypatch, _train())
+    output = tmp_path / "artifact"
+    status = main(
+        [
+            "calibrate",
+            str(CHAIN3_CONFIG),
+            "--output",
+            str(output),
+            "--variant",
+            "no_belief",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert status == 0
+    loaded = load_bayesian_artifact(output)
+    assert loaded.manifest.derivation.variant == "no_belief"
+    assert loaded.manifest.coverage.posterior_calibration_applicable is False
+    assert "wrote calibration artifact" in out
+    assert f"aggregate_digest={loaded.manifest.aggregate_digest}" in out
 
 
 # --------------------------------------------------------------------------- #

@@ -1,0 +1,106 @@
+# Tiny deterministic chain3 offline-calibration config for the M003/S03
+# matched full/no-belief/no-strategic ablation triple.
+#
+# This is a *source* calibration protocol: the three variant flags select the
+# derivation assumptions, not a different config. The same file is used
+# unchanged for all three:
+#
+#   dfl calibrate configs/calibrate_ablation_chain3.yaml \
+#       --output runs/ablation/full           --variant full
+#   dfl calibrate configs/calibrate_ablation_chain3.yaml \
+#       --output runs/ablation/no_belief      --variant no_belief
+#   dfl calibrate configs/calibrate_ablation_chain3.yaml \
+#       --output runs/ablation/no_strategic   --variant no_strategic
+#
+# The budget is deliberately small but *informative*: the pinned seed is chosen
+# and asserted by tests so a benign degree-2 receiver in the chain3 topology
+# observes a directly adjacent malicious neighbor, type-1 payoff support exists,
+# and the full artifact yields at least one non-fallback action. This does NOT
+# imply the existing configs/calibrate_chain3.yaml master seed/support is
+# informative for ablation; that config is a different, smaller protocol.
+#
+# The embedded experiment is an ordinary strict ExperimentConfig: plain
+# averaging, no preselected attacker, and an explicit local MNIST data root with
+# download disabled (no silent injected fallback). Production therefore runs
+# against a local MNIST training split under ``data/``; the offline integration
+# tests inject a deterministic MNIST-shaped dataset through the production
+# loader seam and never touch the network.
+
+# --- Embedded reference experiment ---------------------------------------- #
+experiment:
+  seed: 20240101
+  rounds: 1
+  device: cpu
+  bitwise: true
+
+  model:
+    name: small_cnn
+
+  data:
+    dataset: mnist
+    partition: iid
+    samples_per_node: 8
+    data_root: data
+    download: false
+
+  training:
+    optimizer: sgd
+    learning_rate: 0.05
+    batch_size: 8
+    local_epochs: 1
+    num_workers: 0
+
+  topology:
+    kind: chain3
+
+  aggregation:
+    kind: plain_average
+
+  evaluation:
+    max_samples: 8
+    batch_size: 8
+
+  trace:
+    snapshot_cadence: 1
+
+# --- Calibration sampler / estimator envelope ----------------------------- #
+# Eight episodes with p0 = 0.5 gives four clean and four attacked episodes, so
+# the small run exercises both strata with enough attacked placements for a
+# benign degree-2 receiver to see a malicious neighbor. The pinned (0, 2, 5)
+# mixture maps exactly onto the D016 zero/weak/strong intensities; the
+# no_strategic variant re-derives the fixed strong (5,) effective mixture from
+# the variant while keeping this source mixture and the schedule shape.
+episodes: 8
+p0: 0.5
+mu_a: [0.0, 2.0, 5.0]
+max_compromised: 1
+smoothing_alpha: 1.0
+design_split_size: 8
+
+# S01-compatible feature/context bins. The degree/progress labels are pinned
+# by the calibration contract; the feature edges are the checked-in
+# first-pass defaults shared with every other calibration config.
+bins:
+  disagreement:
+    edges: [0.25, 0.5, 0.75, 1.0]
+    labels: ["vlo", "lo", "mid", "hi", "vhi"]
+  relative_norm:
+    edges: [0.5, 1.0, 2.0]
+    labels: ["tiny", "small", "large", "huge"]
+  loss_delta:
+    edges: [-0.05, 0.0, 0.05]
+    labels: ["drop", "flatneg", "flatpos", "rise"]
+  degree:
+    labels: ["1", "2", "3-4", "5+"]
+  progress:
+    labels: ["early", "mid", "late"]
+
+# Pinned D021/D022 action-space provenance shared with the online policy.
+action_space:
+  multiplier_set: [0.0, 0.5, 1.0]
+  self_multiplier: 1.0
+  omega: 0.5
+  degree_cap: 4
+  tie_tolerance: 1.0e-09
+  ordering: "fewer_rejected_then_lexicographic"
+  pruning: "directional_disagreement_desc_sender_id_asc"

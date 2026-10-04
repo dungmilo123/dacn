@@ -27,17 +27,24 @@ underlying context and never expose a stack trace or a staging path.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
+from .ablation import CALIBRATION_VARIANTS
+from .ablation_evaluation import AblationEvaluationError
 from .aggregation import AggregationError
 from .bayesian_artifact import BayesianArtifactError, load_bayesian_artifact
 from .bayesian_evidence import EvidenceError, collect_bayesian_evidence
 from .calibration import CalibrationError, calibrate_from_config
 from .calibration_artifact_writer import CalibrationPublishError
-from .calibration_config import CalibrationConfigError, load_calibration_config
+from .calibration_config import (
+    CalibrationConfigError,
+    load_calibration_config,
+    parse_calibration_text,
+)
 from .calibration_estimator import CalibrationEstimationError
 from .calibration_scoring import CalibrationScoringError
 from .config import BayesianAggregation, ConfigError, load_config
@@ -50,7 +57,6 @@ from .evaluation import (
     run_held_out_study,
 )
 from .evaluation_config import (
-    REQUIRED_POLICY_IDS,
     BaselineStudyConfig,
     BaselineStudyConfigError,
     HeldOutStudyConfig,
@@ -147,6 +153,11 @@ _EVALUATE_ERRORS = _CLI_ERRORS + (
     EvaluationError,
     BaselineStudyConfigError,
     HeldOutStudyConfigError,
+    # The opt-in matched-ablation preflight raises a bounded RuntimeError whose
+    # validation class names the mismatch. It must be reported as a clean CLI
+    # error (nonzero exit, no traceback, no partial publication) rather than
+    # escaping as an uncaught exception.
+    AblationEvaluationError,
 )
 
 
@@ -245,6 +256,18 @@ def build_calibrate_parser() -> argparse.ArgumentParser:
             "Destination directory for the frozen artifact. Must not exist "
             "and must not alias the config or data root; published "
             "atomically after staged loader validation."
+        ),
+    )
+    parser.add_argument(
+        "--variant",
+        choices=CALIBRATION_VARIANTS,
+        default=None,
+        help=(
+            "Override the loaded calibration config's ablation variant "
+            "(full, no_belief, or no_strategic). Without this flag the "
+            "config's own variant is used (default full). The override is "
+            "revalidated through the strict calibration model and is the "
+            "sole requested variant, not a second competing sampler setting."
         ),
     )
     return parser
@@ -408,11 +431,25 @@ def _run_trace(
     return 0
 
 
-def _run_calibrate(config_path: str, output: str) -> int:
-    """Run the offline calibration pipeline and publish the frozen artifact."""
+def _run_calibrate(
+    config_path: str, output: str, variant: str | None = None
+) -> int:
+    """Run the offline calibration pipeline and publish the frozen artifact.
+
+    ``variant`` is the optional ``--variant`` override. When supplied it
+    replaces the loaded config's declared variant and the whole config is
+    revalidated through the strict calibration model, so an override can never
+    smuggle in an invalid variant/mixture combination. The variant itself is
+    reported through the published artifact metadata, never through a raw
+    config dump on stdout.
+    """
 
     try:
         config = load_calibration_config(config_path)
+        if variant is not None:
+            payload = config.model_dump(mode="json")
+            payload["variant"] = variant
+            config = parse_calibration_text(json.dumps(payload, sort_keys=True))
         result = calibrate_from_config(
             config,
             output,
@@ -504,7 +541,7 @@ def _held_out_success_marker(
         f"selection_manifest={selection_manifest} "
         f"final_manifest={final_manifest} "
         f"output={output} "
-        f"policies={len(REQUIRED_POLICY_IDS)} "
+        f"policies={len(spec.study.policy_ids())} "
         f"selection_seeds={len(spec.study.seeds)} "
         f"final_seeds={len(spec.final_seeds)} "
         f"selection_cells={selection_cells} "
@@ -539,7 +576,7 @@ def _run_held_out_evaluate(
         selection_cells = (
             len(spec.study.seeds)
             * len(spec.known_schedules)
-            * len(REQUIRED_POLICY_IDS)
+            * len(spec.study.policy_ids())
         )
         marker = _held_out_success_marker(
             spec,
@@ -665,7 +702,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args_list and args_list[0] == "calibrate":
         calibrate_parser = build_calibrate_parser()
         calibrate_args = calibrate_parser.parse_args(args_list[1:])
-        return _run_calibrate(calibrate_args.config, calibrate_args.output)
+        return _run_calibrate(
+            calibrate_args.config, calibrate_args.output, calibrate_args.variant
+        )
 
     if args_list and args_list[0] == "evaluate":
         evaluate_parser = build_evaluate_parser()
