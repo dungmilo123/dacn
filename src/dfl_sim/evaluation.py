@@ -50,13 +50,16 @@ from .config import AggregationConfig, ExperimentConfig
 from .evaluation_config import (
     REQUIRED_POLICY_IDS,
     BaselineStudyConfig,
+    HeldOutStudyConfig,
     NamedSchedule,
     PanelPolicy,
     SelectionSpec,
+    held_out_study_digest,
     hyperparameter_digest,
     load_study_config,
     policy_identity,
     selected_hyperparameters,
+    selection_projection,
     selection_spec_digest,
     study_digest,
 )
@@ -67,6 +70,9 @@ __all__ = [
     "MANIFEST_FILENAME",
     "MANIFEST_SCHEMA",
     "MANIFEST_SCHEMA_VERSION",
+    "FINAL_MANIFEST_FILENAME",
+    "FINAL_MANIFEST_SCHEMA",
+    "FINAL_MANIFEST_SCHEMA_VERSION",
     "SELECTION_MANIFEST_FILENAME",
     "SELECTION_MANIFEST_SCHEMA",
     "SELECTION_MANIFEST_SCHEMA_VERSION",
@@ -74,12 +80,15 @@ __all__ = [
     "BaselineCell",
     "BaselineStudyResult",
     "EvaluationError",
+    "FinalResult",
     "SelectionCell",
     "SelectionResult",
     "build_cell_config",
     "compute_shared_input_digest",
+    "final_output_digest",
     "load_study_config",
     "run_baseline_study",
+    "run_final_phase",
     "run_selection_phase",
     "selection_output_digest",
     "validate_shared_inputs",
@@ -100,11 +109,19 @@ SELECTION_MANIFEST_FILENAME = "selection-manifest.json"
 SELECTION_MANIFEST_SCHEMA = "dfl_held_out_selection"
 SELECTION_MANIFEST_SCHEMA_VERSION = 1
 
+#: Versioned final-manifest identity (M003/S02).
+FINAL_MANIFEST_FILENAME = "final-manifest.json"
+FINAL_MANIFEST_SCHEMA = "dfl_held_out_study_manifest"
+FINAL_MANIFEST_SCHEMA_VERSION = 1
+
 #: Private same-parent staging prefix; the final directory is renamed into place.
 _STAGING_PREFIX = ".baseline_study.staging-"
 
 #: Private staging prefix for the selection-phase output.
 _SELECTION_STAGING_PREFIX = ".selection.staging-"
+
+#: Private staging prefix for the final-phase output.
+_FINAL_STAGING_PREFIX = ".final.staging-"
 
 #: Canonical panel ordering used for deterministic manifest entry order.
 _POLICY_ORDER: dict[str, int] = {
@@ -180,6 +197,18 @@ class SelectionResult:
     """Immutable outcome of a completed frozen selection publication."""
 
     selection: SelectionSpec
+    output_path: Path
+    manifest_path: Path
+    manifest: Mapping[str, object]
+    cells: tuple[SelectionCell, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class FinalResult:
+    """Immutable outcome of a completed final-phase publication."""
+
+    study: HeldOutStudyConfig
+    selection_output_path: Path
     output_path: Path
     manifest_path: Path
     manifest: Mapping[str, object]
@@ -995,6 +1024,404 @@ def run_selection_phase(
         selection=selection,
         output_path=destination,
         manifest_path=destination / SELECTION_MANIFEST_FILENAME,
+        manifest=manifest,
+        cells=final_cells,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Final-phase runner (M003/S02)
+# --------------------------------------------------------------------------- #
+def final_output_digest(manifest: Mapping[str, object]) -> str:
+    """Canonical SHA-256 over a final manifest excluding its own digest."""
+
+    payload = {
+        key: value
+        for key, value in manifest.items()
+        if key != "final_output_digest"
+    }
+    return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+
+
+def _load_frozen_selection_manifest(
+    selection_output: str | os.PathLike[str],
+) -> tuple[Path, dict]:
+    """Load and validate a frozen selection manifest, or fail closed.
+
+    Requires an existing directory holding exactly the schema-v1 selection
+    manifest with ``status == "frozen"``. Any missing, unreadable, malformed,
+    or non-frozen output raises :class:`EvaluationError` before any final cell
+    work begins, so a partial study cannot proceed from stale evidence.
+    """
+
+    directory = Path(os.path.abspath(os.fspath(selection_output)))
+    if not directory.is_dir():
+        raise EvaluationError(
+            f"selection output directory not found: {directory}"
+        )
+    manifest_path = directory / SELECTION_MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        raise EvaluationError(
+            "selection output is missing "
+            f"{SELECTION_MANIFEST_FILENAME}: {directory}"
+        )
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise EvaluationError(
+            f"could not read frozen selection manifest {manifest_path}: {exc}"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise EvaluationError(
+            f"selection manifest {manifest_path} is not a JSON object"
+        )
+    manifest = dict(raw)
+    schema = manifest.get("schema")
+    if schema != SELECTION_MANIFEST_SCHEMA:
+        raise EvaluationError(
+            f"selection manifest schema {schema!r} is not "
+            f"{SELECTION_MANIFEST_SCHEMA!r}"
+        )
+    version = manifest.get("schema_version")
+    if version != SELECTION_MANIFEST_SCHEMA_VERSION:
+        raise EvaluationError(
+            f"selection manifest schema_version {version!r} is not "
+            f"{SELECTION_MANIFEST_SCHEMA_VERSION!r}"
+        )
+    status = manifest.get("status")
+    if status != "frozen":
+        raise EvaluationError(
+            f"selection manifest status {status!r} is not 'frozen'"
+        )
+    return directory, manifest
+
+
+def _canonical_final_cells(
+    study: HeldOutStudyConfig,
+) -> tuple[tuple[int, NamedSchedule, PanelPolicy], ...]:
+    """Every (seed, schedule, policy) final cell in deterministic order.
+
+    Seeds are ascending, the known schedules plus the reserved held-out
+    schedule are sorted by id, and policies follow the canonical panel order,
+    so the traversal and the resulting manifest are independent of the
+    caller's schedule declaration order.
+    """
+
+    schedules = tuple(
+        sorted(
+            (*study.known_schedules, study.held_out_schedule),
+            key=lambda entry: entry.id,
+        )
+    )
+    cells: list[tuple[int, NamedSchedule, PanelPolicy]] = []
+    for seed in sorted(int(seed) for seed in study.final_seeds):
+        for schedule in schedules:
+            for policy in _canonical_panel(study.study):
+                cells.append((seed, schedule, policy))
+    return tuple(cells)
+
+
+def _final_manifest_entry(
+    *,
+    study: BaselineStudyConfig,
+    policy: PanelPolicy,
+    seed: int,
+    schedule: NamedSchedule,
+    config: ExperimentConfig,
+    controller: AdaptiveAttackController,
+    artifact_digest: str | None,
+    relative: str,
+    held_out: bool,
+) -> dict:
+    """One per-cell final manifest entry.
+
+    Reuses the selection entry shape (including the schedule id/spec/digest and
+    the controller-derived ``realized_kappa_sequence``) and adds a boolean
+    ``held_out`` flag marking the reserved unseen schedule.
+    """
+
+    entry = _selection_manifest_entry(
+        study=study,
+        policy=policy,
+        seed=seed,
+        schedule=schedule,
+        config=config,
+        controller=controller,
+        artifact_digest=artifact_digest,
+        relative=relative,
+    )
+    entry["held_out"] = bool(held_out)
+    return entry
+
+
+def _build_final_manifest(
+    *,
+    spec: HeldOutStudyConfig,
+    selection_manifest: Mapping[str, object],
+    shared_input_digest: str,
+    cells: tuple[SelectionCell, ...],
+) -> dict:
+    entries = sorted(
+        (dict(cell.manifest_entry) for cell in cells),
+        key=lambda entry: (
+            int(entry["seed"]),
+            _POLICY_ORDER[str(entry["policy_id"])],
+            str(entry["schedule_id"]),
+        ),
+    )
+    study = spec.study
+    held_out = spec.held_out_schedule
+    manifest: dict = {
+        "schema": FINAL_MANIFEST_SCHEMA,
+        "schema_version": FINAL_MANIFEST_SCHEMA_VERSION,
+        "phase": "final",
+        "status": "complete",
+        "study_id": study.study_id,
+        "data_provenance": study.data_provenance,
+        "study_digest": study_digest(study),
+        "selection_spec_digest": selection_spec_digest(
+            selection_projection(spec)
+        ),
+        "held_out_study_digest": held_out_study_digest(spec),
+        "selection_output_digest": selection_manifest.get(
+            "selection_output_digest"
+        ),
+        "shared_input_digest": shared_input_digest,
+        "selection_seeds": sorted(int(seed) for seed in study.seeds),
+        "final_seeds": sorted(int(seed) for seed in spec.final_seeds),
+        "candidate_budget": study.candidate_budget,
+        "panel": list(REQUIRED_POLICY_IDS),
+        "schedule_ids": sorted(
+            {str(entry["schedule_id"]) for entry in entries}
+        ),
+        "held_out_schedule_id": held_out.id,
+        "held_out_schedule": {
+            "id": held_out.id,
+            "schedule": held_out.schedule.model_dump(mode="json"),
+            "schedule_digest": schedule_digest(held_out.schedule),
+        },
+        "entries": entries,
+    }
+    manifest["final_output_digest"] = final_output_digest(manifest)
+    return manifest
+
+
+def run_final_phase(
+    spec: HeldOutStudyConfig,
+    selection_output: str | os.PathLike[str],
+    output: str | os.PathLike[str],
+    *,
+    dataset: Dataset | None = None,
+    dataset_loader: DatasetLoader | None = None,
+    evaluation_dataset: Dataset | None = None,
+    evaluation_dataset_loader: DatasetLoader | None = None,
+    progress: SelectionProgressHook | None = None,
+    trace_validator: TraceValidator | None = None,
+) -> FinalResult:
+    """Run held-out final seeds over known plus reserved schedules.
+
+    Accepts only a :class:`~dfl_sim.evaluation_config.HeldOutStudyConfig` and a
+    previously frozen selection output. Before any final cell runs it (1)
+    validates the frozen selection manifest schema and ``status == "frozen"``,
+    (2) recomputes the selection-side digests and rejects a mutated
+    selection-side spec, naming only the bounded digests, and (3) re-asserts
+    that the final seeds are disjoint from the selection seeds.
+
+    Every (seed, schedule, policy) cell, including the reserved unseen
+    ``held_out_schedule``, runs through the unchanged production
+    :func:`~dfl_sim.run.run_from_config` composition with one immutable
+    :class:`~dfl_sim.attacker.AdaptiveAttackController` per (seed, schedule), so
+    all policies in a cell share the identical realized attack. Each trace is
+    validated with :class:`~dfl_sim.trajectory.TraceReader` and published
+    atomically into ``output/final-manifest.json`` only after every cell
+    succeeds; any failure publishes nothing.
+
+    ``progress`` receives ``(seed, schedule_id, policy_id)`` before each cell
+    runs so callers can emit bounded per-cell progress markers.
+    """
+
+    if not isinstance(spec, HeldOutStudyConfig):
+        raise EvaluationError(
+            "run_final_phase requires a HeldOutStudyConfig, got "
+            f"{type(spec).__name__}"
+        )
+    study = spec.study
+    destination = _validate_output_destination(output)
+    _resolve_data_sources(
+        study,
+        dataset=dataset,
+        dataset_loader=dataset_loader,
+        evaluation_dataset=evaluation_dataset,
+        evaluation_dataset_loader=evaluation_dataset_loader,
+    )
+    validator = TraceReader if trace_validator is None else trace_validator
+
+    selection_dir, selection_manifest = _load_frozen_selection_manifest(
+        selection_output
+    )
+
+    # Mutated selection-side spec guard: recompute the frozen digests and
+    # reject any mismatch naming only the bounded digests.
+    expected_selection_digest = selection_spec_digest(
+        selection_projection(spec)
+    )
+    expected_study_digest = study_digest(study)
+    observed_selection_digest = selection_manifest.get("selection_spec_digest")
+    observed_study_digest = selection_manifest.get("study_digest")
+    if observed_selection_digest != expected_selection_digest:
+        raise EvaluationError(
+            "selection-side spec mutated: frozen selection_spec_digest "
+            f"{observed_selection_digest} does not match current "
+            f"{expected_selection_digest}"
+        )
+    if observed_study_digest != expected_study_digest:
+        raise EvaluationError(
+            "selection-side spec mutated: frozen study_digest "
+            f"{observed_study_digest} does not match current "
+            f"{expected_study_digest}"
+        )
+    frozen_study_id = selection_manifest.get("study_id")
+    if frozen_study_id != study.study_id:
+        raise EvaluationError(
+            "selection-side spec mutated: frozen study_id "
+            f"{frozen_study_id!r} does not match current {study.study_id!r}"
+        )
+
+    # Re-assert the split. HeldOutStudyConfig already enforces this, but the
+    # final runner re-checks so a mutated/injected spec can never run.
+    overlap = sorted(
+        set(int(seed) for seed in study.seeds)
+        & set(int(seed) for seed in spec.final_seeds)
+    )
+    if overlap:
+        raise EvaluationError(
+            f"final seeds overlap the selection seeds: {overlap!r}"
+        )
+
+    cells = _canonical_final_cells(spec)
+    if not cells:
+        raise EvaluationError(
+            "final phase has no (seed, schedule, policy) cells to run"
+        )
+
+    # Derive every cell config and one controller/kappa sequence per
+    # (seed, schedule) up front, then prove the paired-input invariant before
+    # any expensive training or evaluation work begins.
+    held_out_id = spec.held_out_schedule.id
+    cell_configs: dict[tuple[int, str, str], ExperimentConfig] = {}
+    controllers: dict[tuple[int, str], AdaptiveAttackController] = {}
+    kappa_sequences: dict[tuple[int, str], tuple[float, ...]] = {}
+    for seed, schedule, policy in cells:
+        cell_configs[(seed, schedule.id, policy.id)] = build_cell_config(
+            study.base, policy.aggregation, seed
+        )
+        key = (seed, schedule.id)
+        if key not in controllers:
+            controller = AdaptiveAttackController.from_episode(
+                compromised_node=study.base.attack.compromised_node,
+                schedule=schedule.schedule,
+                total_rounds=study.base.rounds,
+                master_seed=int(seed),
+            )
+            controllers[key] = controller
+            kappa_sequences[key] = realized_kappa_sequence(
+                schedule.schedule, study.base.rounds, controller.schedule_seed
+            )
+    shared_input_digest = validate_shared_inputs(list(cell_configs.values()))
+
+    staging: Path | None = None
+    published = False
+    published_cells: list[SelectionCell] = []
+    try:
+        staging, staging_root = _prepare_staging(
+            destination, prefix=_FINAL_STAGING_PREFIX
+        )
+        artifact_cache: dict[str, str] = {}
+        for seed, schedule, policy in cells:
+            if progress is not None:
+                progress(int(seed), schedule.id, policy.id)
+            config = cell_configs[(seed, schedule.id, policy.id)]
+            controller = controllers[(seed, schedule.id)]
+            relative = _selection_relative_trace_path(
+                policy.id, seed, schedule.id
+            )
+            trace_dir = staging / relative
+            label = (
+                f"policy {policy.id!r} seed {seed} schedule {schedule.id!r}"
+            )
+            _execute_cell_run(
+                config,
+                trace_dir,
+                staging_root=staging_root,
+                label=label,
+                dataset=dataset,
+                dataset_loader=dataset_loader,
+                evaluation_dataset=evaluation_dataset,
+                evaluation_dataset_loader=evaluation_dataset_loader,
+                controller=controller,
+            )
+            _validate_cell_trace(validator, trace_dir, label=label)
+
+            artifact_digest = _artifact_digest(
+                policy.aggregation, artifact_cache
+            )
+            entry = _final_manifest_entry(
+                study=study,
+                policy=policy,
+                seed=seed,
+                schedule=schedule,
+                config=config,
+                controller=controller,
+                artifact_digest=artifact_digest,
+                relative=relative,
+                held_out=schedule.id == held_out_id,
+            )
+            published_cells.append(
+                SelectionCell(
+                    seed=int(seed),
+                    policy_id=policy.id,
+                    schedule_id=schedule.id,
+                    trace_path=trace_dir,
+                    relative_trace_path=relative,
+                    manifest_entry=entry,
+                    realized_kappa_sequence=kappa_sequences[
+                        (seed, schedule.id)
+                    ],
+                )
+            )
+
+        manifest = _build_final_manifest(
+            spec=spec,
+            selection_manifest=selection_manifest,
+            shared_input_digest=shared_input_digest,
+            cells=tuple(published_cells),
+        )
+        _publish_staging(
+            staging, destination, manifest, FINAL_MANIFEST_FILENAME
+        )
+        published = True
+    finally:
+        if not published and staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
+
+    # Re-key the published cells to their final absolute trace paths.
+    final_cells = tuple(
+        SelectionCell(
+            seed=cell.seed,
+            policy_id=cell.policy_id,
+            schedule_id=cell.schedule_id,
+            trace_path=destination / cell.relative_trace_path,
+            relative_trace_path=cell.relative_trace_path,
+            manifest_entry=cell.manifest_entry,
+            realized_kappa_sequence=cell.realized_kappa_sequence,
+        )
+        for cell in published_cells
+    )
+    return FinalResult(
+        study=spec,
+        selection_output_path=selection_dir,
+        output_path=destination,
+        manifest_path=destination / FINAL_MANIFEST_FILENAME,
         manifest=manifest,
         cells=final_cells,
     )
