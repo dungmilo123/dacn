@@ -1,0 +1,47 @@
+# Debug 3-node chain episode driving the artifact-backed exact Bayesian policy
+# (M002/S01). It points at the checked-in hand-computable schema-v1 fixture and
+# pins the D021 first-pass action-space provenance, so the config and artifact
+# cannot silently disagree. MNIST download stays disabled; the episode is
+# deterministic and offline. The fixture declares only the "mid" progress bin,
+# so with rounds=2 round 0 honestly falls back to self-only and round 1 selects
+# the posterior-weighted argmax.
+seed: 20240101
+rounds: 2
+device: cpu
+bitwise: true
+
+model:
+  name: small_cnn
+
+data:
+  dataset: mnist
+  partition: iid
+  samples_per_node: 64
+  data_root: data
+  download: false
+
+training:
+  optimizer: sgd
+  learning_rate: 0.05
+  batch_size: 16
+  local_epochs: 1
+  num_workers: 0
+
+topology:
+  kind: chain3
+
+aggregation:
+  kind: bayesian
+  # Directory of the frozen schema-v1 artifact, relative to the run directory.
+  artifact_dir: tests/fixtures/bayesian_v1
+  omega: 0.5
+  degree_cap: 4
+  tie_tolerance: 1.0e-09
+
+# Bounded privileged post-commit evaluation (R008) and trace cadence (R009).
+evaluation:
+  max_samples: 512
+  batch_size: 64
+
+trace:
+  snapshot_cadence: 1

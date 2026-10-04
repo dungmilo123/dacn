@@ -21,12 +21,17 @@ import yaml
 
 from dfl_sim import (
     ATTACK_KAPPAS,
+    BAYESIAN_DEGREE_CAP,
+    BAYESIAN_OMEGA,
+    BAYESIAN_TIE_TOLERANCE,
     MAX_EVAL_BATCH_SIZE,
     MAX_EVAL_SAMPLES,
     MAX_ROUNDS,
     MAX_SAMPLES_PER_NODE,
     MAX_SNAPSHOT_CADENCE,
     AttackConfig,
+    BayesianAggregation,
+    BayesianPolicy,
     Chain3Topology,
     ConfigError,
     DeterminismError,
@@ -39,7 +44,10 @@ from dfl_sim import (
     LocalOnlyPolicy,
     PlainAverageAggregation,
     PlainAveragePolicy,
+    PolicyError,
     TraceConfig,
+    ValidationReferenceAggregation,
+    ValidationReferencePolicy,
     WattsStrogatzTopology,
     build_policy,
     canonical_dump,
@@ -55,6 +63,8 @@ from dfl_sim import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLEAN_3NODE = REPO_ROOT / "configs" / "clean_3node.yaml"
 POISON_3NODE = REPO_ROOT / "configs" / "fixed_poison_3node.yaml"
+BAYESIAN_3NODE = REPO_ROOT / "configs" / "bayesian_fixture_3node.yaml"
+BAYESIAN_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "bayesian_v1"
 
 
 # --------------------------------------------------------------------------- #
@@ -754,6 +764,189 @@ def test_checked_in_configs_declare_plain_average() -> None:
         # The checked-in YAML spells the selector out rather than relying on
         # the programmatic default.
         assert "aggregation:" in path.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Validation-loss reference selector (D026) + Q7 negative surface
+# --------------------------------------------------------------------------- #
+def _validation_reference(**overrides) -> dict:
+    return {
+        "kind": "validation_reference",
+        "tolerance": 0.0,
+        **overrides,
+    }
+
+
+def test_validation_reference_aggregation_loads() -> None:
+    config = make(aggregation=_validation_reference(tolerance=0.05))
+    assert isinstance(config.aggregation, ValidationReferenceAggregation)
+    assert config.aggregation.kind == "validation_reference"
+    assert config.aggregation.tolerance == 0.05
+
+
+def test_validation_reference_requires_tolerance() -> None:
+    with pytest.raises(ConfigError):
+        make(aggregation={"kind": "validation_reference"})
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"tolerance": -0.1},
+        {"tolerance": float("nan")},
+        {"tolerance": float("inf")},
+        {"tolerance": float("-inf")},
+        {"tolerance": "0.0"},
+        {"tolerance": True},
+        {"bogus": 1},
+        {"cutoff": 0.5},
+    ],
+)
+def test_validation_reference_invalid_or_unknown_fields_rejected(
+    overrides: dict,
+) -> None:
+    with pytest.raises(ConfigError):
+        make(aggregation=_validation_reference(**overrides))
+
+
+def test_validation_reference_tolerance_boundaries_accepted() -> None:
+    zero = make(aggregation=_validation_reference(tolerance=0.0))
+    large = make(aggregation=_validation_reference(tolerance=1.0e6))
+    assert isinstance(zero.aggregation, ValidationReferenceAggregation)
+    assert zero.aggregation.tolerance == 0.0
+    assert large.aggregation.tolerance == 1.0e6
+
+
+def test_validation_reference_survives_canonical_dump() -> None:
+    config = make(aggregation=_validation_reference(tolerance=0.25))
+    parsed = json.loads(canonical_dump(config))
+    assert parsed["aggregation"] == {
+        "kind": "validation_reference",
+        "tolerance": 0.25,
+    }
+    assert canonical_dump(config) == canonical_dump(
+        make(aggregation=_validation_reference(tolerance=0.25))
+    )
+
+
+def test_validation_reference_config_is_frozen() -> None:
+    config = make(aggregation=_validation_reference())
+    with pytest.raises(Exception):
+        config.aggregation.tolerance = 1.0  # type: ignore[misc]
+
+
+def test_build_policy_selects_validation_reference() -> None:
+    policy = build_policy(
+        make(aggregation=_validation_reference(tolerance=0.25)).aggregation
+    )
+    assert isinstance(policy, ValidationReferencePolicy)
+    assert policy.tolerance == 0.25
+
+
+def test_build_policy_validation_reference_ignores_total_rounds() -> None:
+    policy = build_policy(
+        make(aggregation=_validation_reference()).aggregation, total_rounds=3
+    )
+    assert isinstance(policy, ValidationReferencePolicy)
+
+
+# --------------------------------------------------------------------------- #
+# Bayesian aggregation selector (R013/R015/R016, D021/D022/D023)
+# --------------------------------------------------------------------------- #
+def _bayesian(**overrides) -> dict:
+    return {
+        "kind": "bayesian",
+        "artifact_dir": str(BAYESIAN_FIXTURE),
+        "omega": BAYESIAN_OMEGA,
+        "degree_cap": BAYESIAN_DEGREE_CAP,
+        "tie_tolerance": BAYESIAN_TIE_TOLERANCE,
+        **overrides,
+    }
+
+
+def test_bayesian_aggregation_loads_with_pinned_provenance() -> None:
+    config = make(aggregation=_bayesian())
+    assert isinstance(config.aggregation, BayesianAggregation)
+    assert config.aggregation.kind == "bayesian"
+    assert config.aggregation.artifact_dir == str(BAYESIAN_FIXTURE)
+    assert config.aggregation.omega == BAYESIAN_OMEGA
+    assert config.aggregation.degree_cap == BAYESIAN_DEGREE_CAP
+    assert config.aggregation.tie_tolerance == BAYESIAN_TIE_TOLERANCE
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"artifact_dir": ""},
+        {"omega": 0.25},
+        {"omega": 1.0},
+        {"degree_cap": 3},
+        {"degree_cap": 5},
+        {"degree_cap": 0},
+        {"tie_tolerance": 1.0e-6},
+        {"tie_tolerance": 0.0},
+        {"bogus": 1},
+    ],
+)
+def test_bayesian_invalid_or_unknown_fields_rejected(overrides: dict) -> None:
+    aggregation = _bayesian(**overrides)
+    with pytest.raises(ConfigError):
+        make(aggregation=aggregation)
+
+
+def test_bayesian_requires_artifact_dir() -> None:
+    aggregation = _bayesian()
+    del aggregation["artifact_dir"]
+    with pytest.raises(ConfigError):
+        make(aggregation=aggregation)
+
+
+def test_bayesian_artifact_dir_rejects_nul_bytes() -> None:
+    with pytest.raises(ConfigError):
+        make(aggregation=_bayesian(artifact_dir="bad\x00path"))
+
+
+def test_bayesian_survives_canonical_dump() -> None:
+    config = make(aggregation=_bayesian())
+    parsed = json.loads(canonical_dump(config))
+    assert parsed["aggregation"]["kind"] == "bayesian"
+    assert parsed["aggregation"]["omega"] == BAYESIAN_OMEGA
+    assert parsed["aggregation"]["degree_cap"] == BAYESIAN_DEGREE_CAP
+    assert parsed["aggregation"]["tie_tolerance"] == BAYESIAN_TIE_TOLERANCE
+    assert canonical_dump(config) == canonical_dump(make(aggregation=_bayesian()))
+
+
+def test_bayesian_aggregation_config_is_frozen() -> None:
+    config = make(aggregation=_bayesian())
+    with pytest.raises(Exception):
+        config.aggregation.omega = 0.25  # type: ignore[misc]
+
+
+def test_build_policy_builds_bayesian_with_total_rounds() -> None:
+    config = make(rounds=2, aggregation=_bayesian())
+    policy = build_policy(config.aggregation, total_rounds=config.rounds)
+    assert isinstance(policy, BayesianPolicy)
+    assert policy.total_rounds == 2
+
+
+def test_build_policy_bayesian_requires_total_rounds() -> None:
+    config = make(aggregation=_bayesian())
+    with pytest.raises(PolicyError, match="total_rounds"):
+        build_policy(config.aggregation)
+
+
+def test_checked_in_bayesian_config_points_at_hand_fixture() -> None:
+    config = load_config(BAYESIAN_3NODE)
+    assert isinstance(config.aggregation, BayesianAggregation)
+    assert config.aggregation.artifact_dir == "tests/fixtures/bayesian_v1"
+    assert config.aggregation.omega == BAYESIAN_OMEGA
+    assert config.aggregation.degree_cap == BAYESIAN_DEGREE_CAP
+    assert config.aggregation.tie_tolerance == BAYESIAN_TIE_TOLERANCE
+    assert config.rounds == 2
+    # The relative artifact directory resolves from the repo root and the
+    # checked-in config builds the ordinary Bayesian policy.
+    policy = build_policy(config.aggregation, total_rounds=config.rounds)
+    assert isinstance(policy, BayesianPolicy)
 
 
 # --------------------------------------------------------------------------- #

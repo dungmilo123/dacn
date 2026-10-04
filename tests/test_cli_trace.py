@@ -11,6 +11,7 @@ returns nonzero without publishing a partial trace or replacing a prior log.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -24,14 +25,16 @@ from dfl_sim import (
     EpisodeError,
     TraceReader,
     TrajectoryError,
+    digest_inventory,
     load_config,
     run_from_config,
 )
-from dfl_sim.__main__ import main
+from dfl_sim.__main__ import BAYESIAN_REPORT_MARKER, main
 from helpers import MNISTShapedDataset
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLEAN_CONFIG = REPO_ROOT / "configs" / "clean_3node.yaml"
+BAYESIAN_CONFIG = REPO_ROOT / "configs" / "bayesian_fixture_3node.yaml"
 
 
 def _train() -> MNISTShapedDataset:
@@ -384,3 +387,101 @@ def test_console_script_help_when_installed() -> None:
     proc = subprocess.run([executable, "--help"], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert "run CONFIG --output" in proc.stdout
+
+
+# --------------------------------------------------------------------------- #
+# On-policy Bayesian report (T02): emitted only after a successful trace
+# --------------------------------------------------------------------------- #
+def test_cli_run_emits_canonical_bayesian_report(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _patch_loaders(monkeypatch, evaluation=_evaluation())
+    output = tmp_path / "trace"
+
+    status = main(
+        ["run", str(BAYESIAN_CONFIG), "--output", str(output), "--bayesian-report"]
+    )
+
+    assert status == 0
+    stdout = capsys.readouterr().out
+    records = [
+        line for line in stdout.splitlines()
+        if line.startswith(BAYESIAN_REPORT_MARKER)
+    ]
+    assert len(records) == 1
+    payload = json.loads(records[0][len(BAYESIAN_REPORT_MARKER):])
+    assert payload["schema"] == "dfl_bayesian_evidence_report"
+    assert list(payload) == sorted(payload)
+    assert payload["selection_count"] >= 1
+    assert 0.0 <= payload["coverage"] <= 1.0
+    assert 0.0 <= payload["mismatch"] <= 1.0
+    assert set(payload["fallback"])
+    assert payload["elapsed_ns_min"] <= payload["elapsed_ns_max"]
+
+    # The trace is real, schema-v1, and carries no diagnostics sidecar: the
+    # strict reader rejects any unexpected file in the directory.
+    with TraceReader(output) as reader:
+        assert reader.manifest["aggregation"] == "bayesian"
+    assert set(digest_inventory(output)) == {
+        "config.json",
+        "events.jsonl",
+        "tensors.npz",
+        "manifest.json",
+    }
+
+
+def test_cli_run_bayesian_report_rejected_for_non_bayesian(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _patch_loaders(monkeypatch)
+    output = tmp_path / "trace"
+
+    status = main(
+        ["run", str(CLEAN_CONFIG), "--output", str(output), "--bayesian-report"]
+    )
+
+    assert status == 1
+    stderr = capsys.readouterr().err
+    assert "bayesian" in stderr
+    assert not output.exists()
+
+
+def test_cli_run_bayesian_report_failure_emits_no_record(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _patch_loaders(monkeypatch)
+    output = tmp_path / "trace"
+    output.mkdir()
+
+    status = main(
+        ["run", str(BAYESIAN_CONFIG), "--output", str(output), "--bayesian-report"]
+    )
+
+    assert status == 1
+    assert BAYESIAN_REPORT_MARKER not in capsys.readouterr().out
+
+
+def test_bayesian_diagnostics_do_not_change_published_trace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_loaders(monkeypatch, evaluation=_evaluation())
+    plain = tmp_path / "plain"
+    reported = tmp_path / "reported"
+
+    assert main(["run", str(BAYESIAN_CONFIG), "--output", str(plain)]) == 0
+    assert (
+        main(
+            [
+                "run",
+                str(BAYESIAN_CONFIG),
+                "--output",
+                str(reported),
+                "--bayesian-report",
+            ]
+        )
+        == 0
+    )
+
+    # Reporting is observability only: enabling it leaves every canonical trace
+    # byte identical and never adds a file to the trace directory.
+    assert digest_inventory(plain) == digest_inventory(reported)

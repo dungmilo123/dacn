@@ -48,7 +48,7 @@ from .data import (
 from .evaluator import EvaluatorError, PrivilegedEvaluator
 from .models import build_model, clone_state_dict
 from .observation import DefaultObservationBuilder, ObservationBuilder
-from .policy import AggregationPolicy, build_policy
+from .policy import AggregationPolicy, BayesianDiagnostic, build_policy
 from .reproducibility import configure_determinism, resolve_seeds
 from .round_log import RoundLogWriter, validate_log_path
 from .simulator import LossEvaluatorFactory, RoundResult, Trainer, run_round
@@ -127,6 +127,7 @@ def run_from_config(
     observer: ObservationBuilder | None = None,
     loss_evaluator: LossEvaluatorFactory | None = None,
     controller: OutgoingController | None = None,
+    diagnostic_sink: Callable[[BayesianDiagnostic], None] | None = None,
 ) -> EpisodeResult:
     """Run one deterministic synchronous DFL episode and return its result.
 
@@ -213,8 +214,18 @@ def run_from_config(
 
     # One immutable policy and observer for the whole episode, built from the
     # validated aggregation selector, mirroring the fixed attacker controller.
+    # D023: the validated round count is supplied at construction so the
+    # Bayesian policy can resolve early/mid/late progress from the immutable
+    # public run context while `select_weights` still receives only a
+    # LocalObservation. Baselines ignore the extra argument.
     episode_policy = (
-        policy if policy is not None else build_policy(resolved.aggregation)
+        policy
+        if policy is not None
+        else build_policy(
+            resolved.aggregation,
+            total_rounds=resolved.rounds,
+            diagnostic_sink=diagnostic_sink,
+        )
     )
     episode_observer = (
         observer if observer is not None else DefaultObservationBuilder()

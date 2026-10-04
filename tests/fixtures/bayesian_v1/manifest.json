@@ -1,0 +1,140 @@
+{
+  "schema": "dfl_bayesian_artifact",
+  "schema_version": 1,
+  "provenance": {
+    "reference_policy": "plain_average",
+    "p0": 0.5,
+    "mu_a": [
+      0.0,
+      2.0,
+      5.0
+    ],
+    "placement": "uniform_non_isolated",
+    "max_compromised": 1,
+    "smoothing_alpha": 1.0,
+    "design_split": "clean_global_heldout"
+  },
+  "action_space": {
+    "multiplier_set": [
+      0.0,
+      0.5,
+      1.0
+    ],
+    "self_multiplier": 1.0,
+    "omega": 0.5,
+    "degree_cap": 4,
+    "tie_tolerance": 1e-09,
+    "ordering": "fewer_rejected_then_lexicographic",
+    "pruning": "directional_disagreement_desc_sender_id_asc"
+  },
+  "bins": {
+    "disagreement": {
+      "edges": [
+        0.5,
+        1.0
+      ],
+      "labels": [
+        "lo",
+        "mid",
+        "hi"
+      ]
+    },
+    "relative_norm": {
+      "edges": [
+        1.0
+      ],
+      "labels": [
+        "small",
+        "large"
+      ]
+    },
+    "loss_delta": {
+      "edges": [
+        0.0
+      ],
+      "labels": [
+        "neg",
+        "pos"
+      ]
+    },
+    "degree": {
+      "labels": [
+        "1",
+        "2",
+        "3-4",
+        "5+"
+      ]
+    },
+    "progress": {
+      "labels": [
+        "early",
+        "mid",
+        "late"
+      ]
+    }
+  },
+  "prior": [
+    {
+      "degree": 1,
+      "state": [
+        0
+      ],
+      "probability": 0.8
+    },
+    {
+      "degree": 1,
+      "state": [
+        1
+      ],
+      "probability": 0.2
+    },
+    {
+      "degree": 2,
+      "state": [
+        0,
+        0
+      ],
+      "probability": 0.7
+    },
+    {
+      "degree": 2,
+      "state": [
+        1,
+        0
+      ],
+      "probability": 0.18
+    },
+    {
+      "degree": 2,
+      "state": [
+        0,
+        1
+      ],
+      "probability": 0.12
+    }
+  ],
+  "support": {
+    "calibration_episodes": 4,
+    "calibration_rounds": 12,
+    "prior_cells": 5,
+    "likelihood_cells": 8,
+    "payoff_cells": 24,
+    "min_cell_count": 1
+  },
+  "coverage": {
+    "likelihood": 0.5,
+    "payoff": 0.5,
+    "posterior_calibration": 0.9
+  },
+  "payloads": {
+    "likelihood.json": {
+      "size_bytes": 1235,
+      "sha256": "a2fcd7f07a98cb96c15fe394f6ec315d338dfd21d4c197161b393427216f83ad"
+    },
+    "payoff.json": {
+      "size_bytes": 4117,
+      "sha256": "355a8740f7c9c9a98dbe3b6e85d3ae6be7c8a5292d58dc3ef00fa51312ec5225"
+    }
+  },
+  "aggregate_digest": "08727da0b916a020ff124afecb5dec9cc7497bf812cd8e07513000de282960f6"
+}

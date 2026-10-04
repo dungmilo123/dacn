@@ -1,0 +1,50 @@
+# Held-out fixed-poison 3-node chain episode driving the D026 local
+# validation-loss reference (M002/S03/T03 acceptance).
+#
+# Byte-for-byte identical to configs/bayesian_fixed_poison_3node.yaml except for
+# the ``aggregation`` block: the reference selector accepts a delivered sender
+# at multiplier 1 exactly when its scalar ``loss_delta`` is at or below the
+# pinned ``tolerance`` (rejecting it to 0 otherwise). It therefore has exactly
+# the same online authority as the Bayesian selector (the frozen scalar
+# LocalObservation seam) and differs only in aggregation. The pinned tolerance
+# "0.0" keeps the comparator documented and deterministic.
+seed: 20240101
+rounds: 2
+device: cpu
+bitwise: true
+
+model:
+  name: small_cnn
+
+data:
+  dataset: mnist
+  partition: iid
+  samples_per_node: 64
+  data_root: data
+  download: false
+
+training:
+  optimizer: sgd
+  learning_rate: 0.05
+  batch_size: 16
+  local_epochs: 1
+  num_workers: 0
+
+topology:
+  kind: chain3
+
+attack:
+  compromised_node: 0
+  intensity: strong
+
+aggregation:
+  kind: validation_reference
+  tolerance: 0.0
+
+# Bounded privileged post-commit evaluation (R008) and trace cadence (R009).
+evaluation:
+  max_samples: 512
+  batch_size: 64
+
+trace:
+  snapshot_cadence: 1

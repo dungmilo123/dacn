@@ -20,10 +20,23 @@ MNIST. Coverage mirrors the T02 contract:
 from __future__ import annotations
 
 import dataclasses
+import json
+import shutil
+import types
+from pathlib import Path
 
 import pytest
 import torch
 
+from dfl_sim import (
+    BayesianAggregation,
+    BayesianArtifactError,
+    BayesianPolicy,
+    LocalOnlyAggregation,
+    PlainAverageAggregation,
+    ValidationReferenceAggregation,
+    build_policy,
+)
 from dfl_sim.aggregation import (
     AggregationError,
     aggregate_weighted_neighborhood,
@@ -41,11 +54,20 @@ from dfl_sim.policy import (
     LocalOnlyPolicy,
     PlainAveragePolicy,
     PolicyError,
+    ValidationReferencePolicy,
     WeightProfile,
     build_weight_profile,
 )
 
+from dfl_sim.bayesian_artifact import (
+    canonical_json_bytes,
+    compute_aggregate_digest,
+)
+
 _TOL = 1e-12
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BAYESIAN_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "bayesian_v1"
 
 
 # --------------------------------------------------------------------------- #
@@ -178,6 +200,189 @@ def test_fixed_filter_empty_neighborhood_is_exactly_self_only() -> None:
     assert profile.weights == (1.0,)
 
 
+# --------------------------------------------------------------------------- #
+# Validation-loss reference comparator (D026)
+# --------------------------------------------------------------------------- #
+def test_validation_reference_accepts_better_and_equal_neighbors() -> None:
+    obs = _obs(
+        node_id=7,
+        neighbors=(
+            _neighbor(2, loss_delta=-0.5),  # strictly better -> accept
+            _neighbor(5, loss_delta=0.0),  # equal to tolerance -> accept
+        ),
+    )
+    profile = ValidationReferencePolicy(tolerance=0.0).select_weights(obs)
+    _assert_valid_profile(profile, (7, 2, 5))
+    assert profile.multipliers == (1.0, 1.0, 1.0)
+    assert profile.weights == pytest.approx((1 / 3, 1 / 3, 1 / 3), abs=_TOL)
+
+
+def test_validation_reference_rejects_strictly_worse_neighbors() -> None:
+    obs = _obs(
+        node_id=7,
+        neighbors=(
+            _neighbor(2, loss_delta=1e-12),  # just above tolerance -> reject
+            _neighbor(5, loss_delta=0.75),
+        ),
+    )
+    profile = ValidationReferencePolicy(tolerance=0.0).select_weights(obs)
+    _assert_valid_profile(profile, (7, 2, 5))
+    assert profile.multipliers == (1.0, 0.0, 0.0)
+    assert profile.weights == (1.0, 0.0, 0.0)
+
+
+def test_validation_reference_tolerance_is_inclusive() -> None:
+    obs = _obs(node_id=7, neighbors=(_neighbor(2, loss_delta=0.25),))
+    profile = ValidationReferencePolicy(tolerance=0.25).select_weights(obs)
+    assert profile.multipliers == (1.0, 1.0)
+    assert profile.weights == pytest.approx((0.5, 0.5), abs=_TOL)
+
+
+def test_validation_reference_mixed_neighborhood_partial_rejection() -> None:
+    obs = _obs(
+        node_id=7,
+        neighbors=(
+            _neighbor(2, loss_delta=-1.0),
+            _neighbor(5, loss_delta=0.5),
+            _neighbor(9, loss_delta=2.0),
+        ),
+    )
+    profile = ValidationReferencePolicy(tolerance=0.5).select_weights(obs)
+    _assert_valid_profile(profile, (7, 2, 5, 9))
+    assert profile.multipliers == (1.0, 1.0, 1.0, 0.0)
+    assert profile.weights == pytest.approx((1 / 3, 1 / 3, 1 / 3, 0.0), abs=_TOL)
+
+
+def test_validation_reference_empty_neighborhood_is_self_only() -> None:
+    profile = ValidationReferencePolicy(tolerance=0.0).select_weights(
+        _obs(node_id=9)
+    )
+    _assert_valid_profile(profile, (9,))
+    assert profile.multipliers == (1.0,)
+    assert profile.weights == (1.0,)
+    assert profile.degree == 0
+
+
+def test_validation_reference_all_rejected_is_self_only() -> None:
+    obs = _obs(
+        node_id=7,
+        neighbors=(_neighbor(2, loss_delta=0.1), _neighbor(5, loss_delta=0.2)),
+    )
+    profile = ValidationReferencePolicy(tolerance=0.0).select_weights(obs)
+    _assert_valid_profile(profile, (7, 2, 5))
+    assert profile.multipliers == (1.0, 0.0, 0.0)
+    assert profile.weights == (1.0, 0.0, 0.0)
+
+
+def test_validation_reference_preserves_participant_alignment() -> None:
+    # Senders arrive in strictly ascending order; the reference must preserve
+    # the self-first canonical order without reordering or dropping senders.
+    obs = _obs(
+        node_id=1,
+        neighbors=(_neighbor(0, loss_delta=0.0), _neighbor(2, loss_delta=1.0)),
+    )
+    profile = ValidationReferencePolicy(tolerance=0.0).select_weights(obs)
+    assert profile.participant_ids == (1, 0, 2)
+    assert profile.multipliers == (1.0, 1.0, 0.0)
+    assert profile.weight_for(1) == pytest.approx(0.5, abs=_TOL)
+    assert profile.weight_for(0) == pytest.approx(0.5, abs=_TOL)
+    assert profile.weight_for(2) == 0.0
+
+
+def test_validation_reference_selection_is_deterministic() -> None:
+    obs = _obs(
+        node_id=7,
+        neighbors=(_neighbor(2, loss_delta=-0.5), _neighbor(5, loss_delta=0.5)),
+    )
+    policy = ValidationReferencePolicy(tolerance=0.25)
+    assert policy.select_weights(obs) == policy.select_weights(obs)
+
+
+def test_validation_reference_scales_as_single_degree_pass() -> None:
+    # Q6 load profile: one O(degree) selection pass plus the existing
+    # normalization fold -- no joint-action enumeration and no network-wide
+    # topology. Verify exact behavior at a bounded wide degree.
+    degree = 64
+    neighbors = tuple(
+        _neighbor(sender, loss_delta=(-0.5 if sender % 2 else 0.5))
+        for sender in range(1, degree + 1)
+    )
+    obs = _obs(node_id=0, neighbors=neighbors)
+    profile = ValidationReferencePolicy(tolerance=0.0).select_weights(obs)
+    assert profile.participant_ids == (0, *range(1, degree + 1))
+    expected = (1.0,) + tuple(
+        1.0 if neighbor.loss_delta <= 0.0 else 0.0 for neighbor in neighbors
+    )
+    assert profile.multipliers == expected
+    accepted = sum(1 for value in expected if value == 1.0)
+    assert profile.weights == pytest.approx(
+        tuple(value / accepted for value in expected), abs=_TOL
+    )
+
+
+@pytest.mark.parametrize(
+    "tolerance",
+    [-0.1, float("nan"), float("inf"), float("-inf"), "0.0", True],
+)
+def test_validation_reference_rejects_invalid_tolerance(tolerance) -> None:
+    with pytest.raises(PolicyError):
+        ValidationReferencePolicy(tolerance=tolerance)
+
+
+def test_validation_reference_rejects_non_observation_arguments() -> None:
+    policy = ValidationReferencePolicy(tolerance=0.0)
+    for bad in (object(), None, "not-an-observation", torch.zeros(2)):
+        with pytest.raises(PolicyError):
+            policy.select_weights(bad)  # type: ignore[arg-type]
+
+
+def test_validation_reference_rejects_duck_typed_observation() -> None:
+    duck = types.SimpleNamespace(
+        node_id=1,
+        round_index=0,
+        epsilon=DEFAULT_EPSILON,
+        neighbors=(_neighbor(2),),
+        ground_truth="benign",
+    )
+    with pytest.raises(PolicyError):
+        ValidationReferencePolicy(tolerance=0.0).select_weights(duck)
+
+
+def test_validation_reference_rejects_enriched_observation_subclass() -> None:
+    class EnrichedObservation(LocalObservation):
+        pass
+
+    enriched = EnrichedObservation(
+        node_id=1,
+        round_index=0,
+        epsilon=DEFAULT_EPSILON,
+        neighbors=(_neighbor(2),),
+    )
+    object.__setattr__(enriched, "ground_truth", "benign")
+    with pytest.raises(PolicyError):
+        ValidationReferencePolicy(tolerance=0.0).select_weights(enriched)
+
+
+def test_validation_reference_builds_once_through_production_factory() -> None:
+    policy = build_policy(
+        ValidationReferenceAggregation(
+            kind="validation_reference", tolerance=0.25
+        )
+    )
+    assert isinstance(policy, ValidationReferencePolicy)
+    assert policy.tolerance == 0.25
+    # The factory ignores the optional Bayesian run-length context.
+    assert isinstance(
+        build_policy(
+            ValidationReferenceAggregation(
+                kind="validation_reference", tolerance=0.0
+            ),
+            total_rounds=3,
+        ),
+        ValidationReferencePolicy,
+    )
+
+
 def test_three_baselines_produce_distinct_profiles() -> None:
     obs = _obs(
         node_id=7,
@@ -201,6 +406,7 @@ def test_policies_satisfy_runtime_checkable_protocol() -> None:
         LocalOnlyPolicy(),
         PlainAveragePolicy(),
         FixedSimilarityFilterPolicy(cutoff=0.5),
+        ValidationReferencePolicy(tolerance=0.0),
     )
     for policy in policies:
         assert isinstance(policy, AggregationPolicy)
@@ -214,6 +420,8 @@ def test_select_weights_rejects_non_observation_objects() -> None:
             policy.select_weights(None)
     with pytest.raises(PolicyError):
         FixedSimilarityFilterPolicy(cutoff=0.5).select_weights("not-an-observation")
+    with pytest.raises(PolicyError):
+        ValidationReferencePolicy(tolerance=0.0).select_weights("not-an-observation")
 
 
 def test_profiles_and_policies_are_immutable() -> None:
@@ -474,3 +682,64 @@ def test_weighted_average_rejects_non_tensor_state() -> None:
 def test_fixed_filter_rejects_invalid_cutoff(cutoff) -> None:
     with pytest.raises(PolicyError):
         FixedSimilarityFilterPolicy(cutoff=cutoff)
+
+
+# --------------------------------------------------------------------------- #
+# Bayesian factory: artifact load, provenance match, run-length requirement
+# --------------------------------------------------------------------------- #
+def _bayesian_config(artifact_dir: Path | str = BAYESIAN_FIXTURE) -> BayesianAggregation:
+    return BayesianAggregation(
+        artifact_dir=str(artifact_dir),
+        omega=0.5,
+        degree_cap=4,
+        tie_tolerance=1.0e-9,
+    )
+
+
+def _tamper_artifact(source: Path, destination: Path, *, degree_cap: int) -> Path:
+    """Copy a valid artifact and rewrite its action-space degree_cap + digest."""
+
+    shutil.copytree(source, destination)
+    manifest_path = destination / "manifest.json"
+    body = json.loads(manifest_path.read_text(encoding="utf-8"))
+    body["action_space"]["degree_cap"] = degree_cap
+    body["aggregate_digest"] = compute_aggregate_digest(body)
+    manifest_path.write_bytes(canonical_json_bytes(body))
+    return destination
+
+
+def test_build_policy_loads_fixture_and_returns_bayesian_policy() -> None:
+    policy = build_policy(_bayesian_config(), total_rounds=2)
+    assert isinstance(policy, BayesianPolicy)
+    assert policy.total_rounds == 2
+    assert policy.artifact.omega == 0.5
+    assert policy.artifact.degree_cap == 4
+
+
+def test_build_policy_bayesian_requires_total_rounds() -> None:
+    with pytest.raises(PolicyError, match="total_rounds"):
+        build_policy(_bayesian_config())
+
+
+def test_build_policy_bayesian_rejects_missing_artifact_dir() -> None:
+    with pytest.raises(BayesianArtifactError):
+        build_policy(
+            _bayesian_config(BAYESIAN_FIXTURE / "does-not-exist"), total_rounds=2
+        )
+
+
+def test_build_policy_bayesian_rejects_provenance_mismatch(tmp_path: Path) -> None:
+    tampered = _tamper_artifact(
+        BAYESIAN_FIXTURE, tmp_path / "artifact", degree_cap=3
+    )
+    with pytest.raises(PolicyError, match="provenance mismatch"):
+        build_policy(_bayesian_config(tampered), total_rounds=2)
+
+
+def test_baselines_ignore_optional_total_rounds() -> None:
+    assert isinstance(
+        build_policy(LocalOnlyAggregation(), total_rounds=3), LocalOnlyPolicy
+    )
+    assert isinstance(
+        build_policy(PlainAverageAggregation(), total_rounds=3), PlainAveragePolicy
+    )

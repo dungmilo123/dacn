@@ -1,0 +1,49 @@
+# Held-out clean 3-node chain episode driving the generated schema-v1
+# calibration artifact (M002/S03/T03 clean acceptance).
+#
+# Identical to the M001 plain-average clean comparator
+# configs/clean_3node.yaml in every non-aggregation field (same seed, topology,
+# data, training, evaluation, and trace settings) so the clean comparison
+# isolates the aggregation/artifact difference. The documented gate is the
+# final-round mean post-commit evaluation loss: this Bayesian run must be no
+# worse than the plain-average baseline plus 1e-9.
+seed: 20240101
+rounds: 2
+device: cpu
+bitwise: true
+
+model:
+  name: small_cnn
+
+data:
+  dataset: mnist
+  partition: iid
+  samples_per_node: 64
+  data_root: data
+  download: false
+
+training:
+  optimizer: sgd
+  learning_rate: 0.05
+  batch_size: 16
+  local_epochs: 1
+  num_workers: 0
+
+topology:
+  kind: chain3
+
+aggregation:
+  kind: bayesian
+  # Generated artifact directory, relative to the run working directory.
+  artifact_dir: runs/bayesian_chain3_artifact
+  omega: 0.5
+  degree_cap: 4
+  tie_tolerance: 1.0e-09
+
+# Bounded privileged post-commit evaluation (R008) and trace cadence (R009).
+evaluation:
+  max_samples: 512
+  batch_size: 64
+
+trace:
+  snapshot_cadence: 1

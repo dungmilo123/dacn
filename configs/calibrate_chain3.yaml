@@ -1,0 +1,91 @@
+# Tiny deterministic chain3 offline-calibration config (M002/S02/T04).
+#
+# ``dfl calibrate configs/calibrate_chain3.yaml --output ARTIFACT_DIR`` runs a
+# small, fully offline reference calibration over the real synchronous round
+# engine with the plain-average reference policy, scores every D022-eligible
+# counterfactual on a disjoint clean design split, estimates the smoothed
+# schema-v1 prior/likelihood/payoff tables, and atomically publishes a frozen
+# artifact directory the S01 loader accepts unchanged.
+#
+# The embedded ``experiment`` is an ordinary strict ExperimentConfig: plain
+# averaging, no preselected attacker, MNIST download disabled. The calibration
+# envelope adds the sampler/smoothing/design/bin controls and pins the D021
+# first-pass action-space provenance so the generated artifact can never
+# silently disagree with the online policy.
+
+# --- Embedded reference experiment ---------------------------------------- #
+experiment:
+  seed: 20240101
+  rounds: 2
+  device: cpu
+  bitwise: true
+
+  model:
+    name: small_cnn
+
+  data:
+    dataset: mnist
+    partition: iid
+    samples_per_node: 16
+    data_root: data
+    download: false
+
+  training:
+    optimizer: sgd
+    learning_rate: 0.05
+    batch_size: 8
+    local_epochs: 1
+    num_workers: 0
+
+  topology:
+    kind: chain3
+
+  aggregation:
+    kind: plain_average
+
+  evaluation:
+    max_samples: 32
+    batch_size: 8
+
+  trace:
+    snapshot_cadence: 1
+
+# --- Calibration sampler / estimator envelope ----------------------------- #
+# Four episodes with p0 = 0.5 gives two clean and two attacked episodes, so a
+# small run always exercises both strata. Conditional on an attacked episode
+# the pinned (0, 2, 5) mixture is cycled, mapping exactly onto the D016
+# zero/weak/strong intensities.
+episodes: 4
+p0: 0.5
+mu_a: [0.0, 2.0, 5.0]
+max_compromised: 1
+smoothing_alpha: 1.0
+design_split_size: 16
+
+# S01-compatible feature/context bins. The degree/progress labels are pinned
+# by the calibration contract; the feature edges are the checked-in
+# first-pass defaults.
+bins:
+  disagreement:
+    edges: [0.25, 0.5, 0.75, 1.0]
+    labels: ["vlo", "lo", "mid", "hi", "vhi"]
+  relative_norm:
+    edges: [0.5, 1.0, 2.0]
+    labels: ["tiny", "small", "large", "huge"]
+  loss_delta:
+    edges: [-0.05, 0.0, 0.05]
+    labels: ["drop", "flatneg", "flatpos", "rise"]
+  degree:
+    labels: ["1", "2", "3-4", "5+"]
+  progress:
+    labels: ["early", "mid", "late"]
+
+# Pinned D021/D022 action-space provenance shared with the online policy.
+action_space:
+  multiplier_set: [0.0, 0.5, 1.0]
+  self_multiplier: 1.0
+  omega: 0.5
+  degree_cap: 4
+  tie_tolerance: 1.0e-09
+  ordering: "fewer_rejected_then_lexicographic"
+  pruning: "directional_disagreement_desc_sender_id_asc"

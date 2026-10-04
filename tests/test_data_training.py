@@ -17,9 +17,11 @@ from torch.utils.data import Subset
 
 from dfl_sim import (
     DataError,
+    DatasetSplit,
     NonFiniteError,
     StateDictError,
     TrainingError,
+    TrainingSplit,
     build_model,
     clone_state_dict,
     ensure_finite_state,
@@ -27,7 +29,9 @@ from dfl_sim import (
     load_state_into_model,
     local_train_from_snapshot,
     partition_dataset,
+    partition_dataset_with_design,
     partition_indices,
+    partition_indices_with_design,
     subset_for_node,
 )
 from helpers import FailingDataset, MNISTShapedDataset, make_config
@@ -427,3 +431,102 @@ def test_local_train_injected_failure_preserves_snapshot() -> None:
         )
     for key in source:
         assert torch.equal(source[key], baseline[key])
+
+
+# --------------------------------------------------------------------------- #
+# Disjoint local / clean global design split (T01, R014)
+# --------------------------------------------------------------------------- #
+def test_design_split_disjoint_sizes_and_bounds() -> None:
+    split = partition_indices_with_design(
+        100, NODES, 20, seed=7, design_size=15
+    )
+    assert isinstance(split, TrainingSplit)
+    assert set(split.node_indices) == set(NODES)
+    assert all(len(indices) == 20 for indices in split.node_indices.values())
+    assert len(split.design_indices) == 15
+    allocated = split.all_indices
+    assert len(allocated) == 75
+    assert len(set(allocated)) == 75
+    assert all(0 <= index < 100 for index in allocated)
+
+
+def test_design_split_repeatable_and_order_independent() -> None:
+    first = partition_indices_with_design(100, NODES, 20, seed=7, design_size=15)
+    second = partition_indices_with_design(100, NODES, 20, seed=7, design_size=15)
+    assert first == second
+    reversed_nodes = partition_indices_with_design(
+        100, list(reversed(NODES)), 20, seed=7, design_size=15
+    )
+    assert first == reversed_nodes
+
+
+def test_design_split_consumes_one_permutation() -> None:
+    import numpy as np
+
+    split = partition_indices_with_design(100, NODES, 20, seed=7, design_size=10)
+    permutation = np.random.default_rng(7).permutation(100)
+    local = [index for indices in split.node_indices.values() for index in indices]
+    assert local == [int(index) for index in permutation[:60]]
+    assert split.design_indices == tuple(int(index) for index in permutation[60:70])
+
+
+def test_design_split_node_blocks_match_partition_indices() -> None:
+    base = partition_indices(100, NODES, 20, seed=7)
+    split = partition_indices_with_design(100, NODES, 20, seed=7, design_size=10)
+    assert split.node_indices == base
+
+
+def test_design_split_seed_changes_design() -> None:
+    first = partition_indices_with_design(100, NODES, 20, seed=1, design_size=10)
+    second = partition_indices_with_design(100, NODES, 20, seed=2, design_size=10)
+    assert first.design_indices != second.design_indices
+
+
+def test_design_split_insufficient_examples_raises() -> None:
+    with pytest.raises(DataError, match="too few examples"):
+        partition_indices_with_design(74, NODES, 20, seed=1, design_size=15)
+
+
+def test_design_split_non_positive_design_size_rejected() -> None:
+    with pytest.raises(DataError, match="design_size"):
+        partition_indices_with_design(100, NODES, 20, seed=1, design_size=0)
+
+
+def test_partition_dataset_with_design_returns_subsets() -> None:
+    dataset = MNISTShapedDataset(100, seed=5)
+    split = partition_dataset_with_design(
+        dataset, NODES, 20, seed=7, design_size=10
+    )
+    assert isinstance(split, DatasetSplit)
+    assert set(split.node_subsets) == set(NODES)
+    for subset in split.node_subsets.values():
+        assert isinstance(subset, Subset)
+        assert len(subset) == 20
+    assert isinstance(split.design_subset, Subset)
+    assert len(split.design_subset) == 10
+    assert split.design_indices == tuple(
+        int(index) for index in partition_indices_with_design(
+            100, NODES, 20, seed=7, design_size=10
+        ).design_indices
+    )
+
+
+def test_design_split_never_calls_final_test_loader(monkeypatch) -> None:
+    import dfl_sim.data as data_module
+
+    calls: list[int] = []
+
+    def _forbidden(*args, **kwargs):
+        calls.append(1)  # pragma: no cover - must never run
+        raise AssertionError("final-test loader must not be called")
+
+    monkeypatch.setattr(
+        data_module, "load_mnist_evaluation_dataset", _forbidden
+    )
+    dataset = MNISTShapedDataset(100, seed=5)
+    split = partition_dataset_with_design(
+        dataset, NODES, 20, seed=7, design_size=10
+    )
+    partition_indices_with_design(100, NODES, 20, seed=7, design_size=10)
+    assert calls == []
+    assert len(split.design_subset) == 10

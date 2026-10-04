@@ -1,0 +1,90 @@
+[
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "probability": 0.6
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "probability": 0.4
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "probability": 0.1
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "probability": 0.9
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "probability": 0.6
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "probability": 0.4
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "probability": 0.1
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "probability": 0.9
+  }
+]

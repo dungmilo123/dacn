@@ -1,0 +1,290 @@
+[
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "multiplier": 0.0,
+    "value": 0.0
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "multiplier": 0.5,
+    "value": 0.5
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "multiplier": 1.0,
+    "value": 1.0
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "multiplier": 0.0,
+    "value": 0.0
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "multiplier": 0.5,
+    "value": 0.25
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "multiplier": 1.0,
+    "value": 0.5
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "multiplier": 0.0,
+    "value": 0.0
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "multiplier": 0.5,
+    "value": -0.5
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "multiplier": 1.0,
+    "value": -1.0
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "multiplier": 0.0,
+    "value": 0.0
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "multiplier": 0.5,
+    "value": -1.0
+  },
+  {
+    "degree_bin": "1",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "multiplier": 1.0,
+    "value": -2.0
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "multiplier": 0.0,
+    "value": 0.0
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "multiplier": 0.5,
+    "value": 0.5
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "multiplier": 1.0,
+    "value": 1.0
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "multiplier": 0.0,
+    "value": 0.0
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "multiplier": 0.5,
+    "value": 0.25
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 0,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "multiplier": 1.0,
+    "value": 0.5
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "multiplier": 0.0,
+    "value": 0.0
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "multiplier": 0.5,
+    "value": -0.5
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      0,
+      0,
+      0
+    ],
+    "multiplier": 1.0,
+    "value": -1.0
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "multiplier": 0.0,
+    "value": 0.0
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "multiplier": 0.5,
+    "value": -1.0
+  },
+  {
+    "degree_bin": "2",
+    "progress": "mid",
+    "local_type": 1,
+    "evidence_bin": [
+      1,
+      0,
+      0
+    ],
+    "multiplier": 1.0,
+    "value": -2.0
+  }
+]

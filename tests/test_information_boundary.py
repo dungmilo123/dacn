@@ -34,18 +34,24 @@ import gc
 import inspect
 import textwrap
 import types as pytypes
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import networkx as nx
 import pytest
 import torch
 import torch.nn as nn
+from pydantic import ValidationError
 from torch.utils.data import Dataset
 
 from dfl_sim import (
+    DEFAULT_EPSILON,
     AggregationError,
     AttackConfig,
+    BayesianAggregation,
+    BayesianArtifact,
+    BayesianDiagnostic,
+    BayesianPolicy,
     ExperimentConfig,
     FixedSimilarityFilterPolicy,
     LocalObservation,
@@ -55,12 +61,25 @@ from dfl_sim import (
     PlainAveragePolicy,
     PolicyError,
     RoundError,
+    ValidationReferencePolicy,
     WeightProfile,
+    build_bayesian_policy,
+    build_policy,
     build_weight_profile,
+    collect_calibration,
+    estimate_calibration,
+    load_bayesian_artifact,
+    load_calibration_config,
     load_topology,
+    publish_calibration_artifact,
     resolve_seeds,
     run_from_config,
     run_round,
+)
+from dfl_sim.policy import (
+    FALLBACK_CONTEXT_UNAVAILABLE,
+    FALLBACK_MISSING_LIKELIHOOD,
+    FALLBACK_MISSING_PRIOR,
 )
 from helpers import (
     MNISTShapedDataset,
@@ -104,8 +123,11 @@ FORBIDDEN_MODULE_PREFIXES = (
 )
 
 # The only dfl_sim sibling modules the boundary modules may depend on.
+# ``bayesian_artifact`` is a leaf contract module (stdlib/pydantic only) that
+# the Bayesian policy consumes offline; it exposes no privileged runtime state.
 ALLOWED_DFL_IMPORTS = {
     "dfl_sim.aggregation",
+    "dfl_sim.bayesian_artifact",
     "dfl_sim.config",
     "dfl_sim.observation",
 }
@@ -142,10 +164,12 @@ def _full_module(node: ast.ImportFrom) -> str:
     return node.module or ""
 
 
-def _is_forbidden_module(module: str) -> bool:
+def _is_forbidden_module(
+    module: str, prefixes: Sequence[str] = FORBIDDEN_MODULE_PREFIXES
+) -> bool:
     return any(
         module == prefix or module.startswith(prefix + ".")
-        for prefix in FORBIDDEN_MODULE_PREFIXES
+        for prefix in prefixes
     )
 
 
@@ -159,7 +183,13 @@ def _dfl_imports(tree: ast.AST) -> set[str]:
     return found
 
 
-def _boundary_violations(source: str) -> list[str]:
+def _boundary_violations(
+    source: str,
+    *,
+    forbidden: Sequence[str] = FORBIDDEN_MODULE_PREFIXES,
+    banned: frozenset[str] = BANNED_NAMES,
+    forbidden_string_keys: frozenset[str] = frozenset(),
+) -> list[str]:
     """Return boundary violations in ``source`` (empty when clean)."""
 
     tree = ast.parse(source)
@@ -167,18 +197,21 @@ def _boundary_violations(source: str) -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if _is_forbidden_module(alias.name):
+                if _is_forbidden_module(alias.name, forbidden):
                     violations.append(f"forbidden import {alias.name}")
         elif isinstance(node, ast.ImportFrom):
             module = _full_module(node)
-            if _is_forbidden_module(module):
+            if _is_forbidden_module(module, forbidden):
                 violations.append(f"forbidden import {module}")
         elif isinstance(node, ast.Name):
-            if node.id in BANNED_NAMES:
+            if node.id in banned:
                 violations.append(f"banned name {node.id}")
         elif isinstance(node, ast.Attribute):
-            if node.attr in BANNED_NAMES:
+            if node.attr in banned:
                 violations.append(f"banned attribute {node.attr}")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value in forbidden_string_keys:
+                violations.append(f"forbidden string key {node.value!r}")
     return violations
 
 
@@ -473,6 +506,7 @@ def test_builtin_policies_reject_non_observation_arguments() -> None:
         LocalOnlyPolicy(),
         PlainAveragePolicy(),
         FixedSimilarityFilterPolicy(cutoff=1.0, downweight_multiplier=0.5),
+        ValidationReferencePolicy(tolerance=0.0),
     )
     for policy in policies:
         signature = inspect.signature(type(policy).select_weights)
@@ -653,3 +687,822 @@ def test_policy_boundary_holds_when_trace_emission_is_active(tmp_path: Path) -> 
     assert (trace_dir / "manifest.json").is_file()
     assert len(recorder.calls) == 3 * 2
     assert all(_schema_violations(observation) == [] for observation in recorder.seen)
+
+
+# --------------------------------------------------------------------------- #
+# Bayesian artifact/policy boundary (R013/R015/R016, T04)
+# --------------------------------------------------------------------------- #
+POLICY_MODULE = REPO_ROOT / "src" / "dfl_sim" / "policy.py"
+BAYESIAN_ARTIFACT_MODULE = REPO_ROOT / "src" / "dfl_sim" / "bayesian_artifact.py"
+BAYESIAN_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "bayesian_v1"
+
+# The artifact contract and the Bayesian policy are online modules: they may
+# never import the evaluator, attacker, topology, datasets, model definitions,
+# or tensors. ``observation.py`` legitimately imports torch for the production
+# observation *builder*, so torch is forbidden only for the Bayesian modules.
+BAYESIAN_FORBIDDEN_MODULE_PREFIXES = (
+    "dfl_sim.simulator",
+    "dfl_sim.run",
+    "dfl_sim.attacker",
+    "dfl_sim.trajectory",
+    "dfl_sim.evaluator",
+    "dfl_sim.round_log",
+    "dfl_sim.topology",
+    "dfl_sim.data",
+    "dfl_sim.models",
+    "dfl_sim.reproducibility",
+    # The offline calibration family owns the reference population model, the
+    # design split, the hidden sender types, and the counterfactual scores; the
+    # online policy/loader may never import or reach any of it (R005).
+    "dfl_sim.calibration",
+    "dfl_sim.calibration_config",
+    "dfl_sim.calibration_scoring",
+    "dfl_sim.calibration_estimator",
+    "dfl_sim.calibration_artifact_writer",
+    "torch",
+    "torchvision",
+)
+
+# Additive privileged names for the Bayesian online path: true attacker types,
+# global/network metrics, raw state dictionaries, model/message tensors, and
+# calibration design *data*. ``design_split`` is deliberately absent: the
+# artifact records the immutable provenance literal ``"clean_global_heldout"``
+# as metadata, which names no runtime data.
+BAYESIAN_BANNED_NAMES = BANNED_NAMES | frozenset(
+    {
+        "true_type",
+        "true_types",
+        "attacker_type",
+        "attacker_types",
+        "true_attacker_type",
+        "true_attacker_types",
+        "true_label",
+        "true_labels",
+        "evaluator_label",
+        "evaluator_labels",
+        "global_metric",
+        "network_metrics",
+        "raw_state",
+        "raw_states",
+        "state_dict",
+        "message_tensor",
+        "message_tensors",
+        "model_tensor",
+        "model_tensors",
+        "calibration_data",
+        "calibration_split",
+        "design_data",
+        "design_partition",
+        "design_partitions",
+    }
+)
+
+# Privileged *string keys* the online path must never use to index a raw dict.
+BAYESIAN_FORBIDDEN_STRING_KEYS = frozenset(
+    {
+        "true_type",
+        "true_types",
+        "attacker_type",
+        "attacker_types",
+        "ground_truth",
+        "compromised_node",
+        "kappa",
+        "global_metrics",
+        "network_state",
+        "state_dict",
+        "message",
+        "tensor",
+        "label",
+        "labels",
+        "design_split",
+    }
+)
+
+# Bayesian online entry points and the exact, bounded set of in-module helpers
+# they are allowed to execute. Reachability is computed from call and
+# function-reference edges; the artifact leaf is reached only through the three
+# approved imports below.
+BAYESIAN_POLICY_ROOTS = frozenset(
+    {
+        "BayesianPolicy.select_weights",
+        "build_bayesian_policy",
+        "_build_bayesian_from_config",
+        "build_policy",
+        "_require_bayesian_provenance_match",
+    }
+)
+
+BAYESIAN_ALLOWED_ONLINE_HELPERS = frozenset(
+    {
+        "BayesianPolicy._emit",
+        "BayesianPolicy._elapsed_ns",
+        "BayesianPolicy._fallback",
+        "BayesianPolicy.select_weights",
+        "_action_sort_key",
+        "_build_bayesian_from_config",
+        "_compute_posterior",
+        "_expected_payoffs",
+        "_finite_product",
+        "_first_argmax",
+        "_neighbor_evidence",
+        "_normalize_multipliers",
+        "_normalize_participant_ids",
+        "_observation_context",
+        "_require_bayesian_provenance_match",
+        "_require_finite_float",
+        "_require_int",
+        "_require_observation",
+        "_resolve_degree_bin",
+        "_resolve_progress_bin",
+        "_select_variable_positions",
+        "_suffix",
+        "build_bayesian_policy",
+        "build_policy",
+        "build_weight_profile",
+        "enumerate_candidate_actions",
+    }
+)
+
+# The key math/selection helpers that must remain on the online path, so the
+# reachability test cannot silently degrade to a smaller set.
+BAYESIAN_REQUIRED_ONLINE_HELPERS = frozenset(
+    {
+        "BayesianPolicy._fallback",
+        "build_weight_profile",
+        "enumerate_candidate_actions",
+        "_compute_posterior",
+        "_expected_payoffs",
+        "_select_variable_positions",
+    }
+)
+
+# The D026 validation-loss reference is a fourth built-in baseline over the same
+# narrow runtime seam. Its whole implementation may reach only the frozen local
+# observation guard, the scalar-observation context suffix, and the shared
+# finite weight-profile helpers -- never evaluator labels, attack config, timing,
+# or any calibration/report state.
+VALIDATION_REFERENCE_ROOTS = frozenset(
+    {
+        "ValidationReferencePolicy.select_weights",
+        "ValidationReferencePolicy.__post_init__",
+    }
+)
+
+VALIDATION_REFERENCE_ALLOWED_HELPERS = frozenset(
+    {
+        "ValidationReferencePolicy.__post_init__",
+        "ValidationReferencePolicy.select_weights",
+        "_normalize_multipliers",
+        "_normalize_participant_ids",
+        "_observation_context",
+        "_require_finite_float",
+        "_require_int",
+        "_require_observation",
+        "_suffix",
+        "build_weight_profile",
+    }
+)
+
+VALIDATION_REFERENCE_REQUIRED_HELPERS = frozenset(
+    {
+        "ValidationReferencePolicy.select_weights",
+        "ValidationReferencePolicy.__post_init__",
+        "build_weight_profile",
+        "_require_observation",
+    }
+)
+
+BAYESIAN_ALLOWED_ARTIFACT_IMPORTS = frozenset(
+    {"BayesianArtifact", "interval_bin_index", "load_bayesian_artifact"}
+)
+
+BAYESIAN_DIAGNOSTIC_FIELDS = (
+    "node_id",
+    "round_index",
+    "degree",
+    "degree_bin",
+    "progress",
+    "chosen_multipliers",
+    "candidate_count",
+    "pruned",
+    "posterior",
+    "fallback_reason",
+    "normalization_mass",
+    "sender_ids",
+    "evidence_bins",
+    "elapsed_ns",
+)
+
+ALLOWED_FALLBACK_REASONS = frozenset(
+    {
+        FALLBACK_CONTEXT_UNAVAILABLE,
+        FALLBACK_MISSING_LIKELIHOOD,
+        FALLBACK_MISSING_PRIOR,
+    }
+)
+
+# Offline-only calibration module prefixes. The online policy/loader must not
+# import them; kept separate so the static test can assert the exact set.
+CALIBRATION_MODULE_PREFIXES = (
+    "dfl_sim.calibration",
+    "dfl_sim.calibration_config",
+    "dfl_sim.calibration_scoring",
+    "dfl_sim.calibration_estimator",
+    "dfl_sim.calibration_artifact_writer",
+)
+
+# Offline-only calibration/collection/design symbols that must never appear by
+# name on the online path. These are *not* artifact-contract field names (the
+# manifest legitimately records aggregate support/coverage scalars), so a
+# positive hit means a real privilege leak.
+CALIBRATION_OFFLINE_SYMBOLS = frozenset(
+    {
+        "collect_calibration",
+        "collect_episode",
+        "estimate_artifact",
+        "estimate_calibration",
+        "publish_calibration_artifact",
+        "build_schedule",
+        "build_schedule_and_counts",
+        "count_prior_states",
+        "derive_experiment_config",
+        "feasible_prior_states",
+        "design_indices",
+        "design_dataset",
+        "design_loss",
+        "design_split_size",
+        "hidden_types",
+        "marginals",
+        "episode_spec",
+        "candidate_scores",
+    }
+)
+
+# The checked-in offline calibration config drives the generated-artifact
+# runtime walk below, so the online surface is exercised against a real
+# published artifact rather than only the hand-written fixture.
+CALIBRATION_CONFIG_PATH = REPO_ROOT / "configs" / "calibrate_chain3.yaml"
+
+
+def _module_definitions(
+    tree: ast.Module,
+) -> tuple[dict[str, ast.AST], dict[str, ast.AST]]:
+    """Return (top-level functions, methods) keyed by name / ``Class.method``."""
+
+    top: dict[str, ast.AST] = {}
+    methods: dict[str, ast.AST] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    methods[f"{node.name}.{child.name}"] = child
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            top[node.name] = node
+    return top, methods
+
+
+def _callee_names(
+    node: ast.AST,
+    top: Mapping[str, ast.AST],
+    methods: Mapping[str, ast.AST],
+) -> set[str]:
+    """Resolve the in-module call/reference targets of one function body."""
+
+    by_simple: dict[str, list[str]] = {}
+    for qualified in methods:
+        by_simple.setdefault(qualified.rsplit(".", 1)[-1], []).append(qualified)
+
+    called: set[str] = set()
+    referenced: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call):
+            func = child.func
+            if isinstance(func, ast.Name):
+                called.add(func.id)
+            elif isinstance(func, ast.Attribute):
+                called.add(func.attr)
+        elif isinstance(child, ast.Name):
+            referenced.add(child.id)
+
+    targets: set[str] = set()
+    for name in called:
+        if name in top or name in methods:
+            targets.add(name)
+        targets.update(by_simple.get(name, ()))
+    # Only top-level functions resolve from bare name references, so a local
+    # variable named ``degree`` cannot pull in a ``WeightProfile.degree``
+    # property and inflate the reachable set.
+    for name in referenced:
+        if name in top:
+            targets.add(name)
+    return targets
+
+
+def _reachable_definitions(
+    source: str, roots: Sequence[str]
+) -> tuple[frozenset[str], dict[str, ast.AST]]:
+    """Return the in-module definitions reachable from ``roots``."""
+
+    tree = ast.parse(source)
+    top, methods = _module_definitions(tree)
+    definitions = {**top, **methods}
+    missing = [root for root in roots if root not in definitions]
+    assert not missing, f"call-graph roots not found: {missing}"
+
+    seen: set[str] = set()
+    stack = list(roots)
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for target in _callee_names(definitions[current], top, methods):
+            if target not in seen:
+                stack.append(target)
+    return frozenset(seen), definitions
+
+
+def test_bayesian_artifact_module_is_a_privilege_free_leaf() -> None:
+    source = BAYESIAN_ARTIFACT_MODULE.read_text(encoding="utf-8")
+    assert (
+        _boundary_violations(
+            source,
+            forbidden=BAYESIAN_FORBIDDEN_MODULE_PREFIXES,
+            banned=BAYESIAN_BANNED_NAMES,
+            forbidden_string_keys=BAYESIAN_FORBIDDEN_STRING_KEYS,
+        )
+        == []
+    )
+    # The artifact contract is a leaf: it imports no dfl_sim module at all.
+    assert _dfl_imports(ast.parse(source)) == set()
+
+
+def test_bayesian_policy_online_path_is_bounded_and_privilege_free() -> None:
+    source = POLICY_MODULE.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    assert _dfl_imports(tree) <= ALLOWED_DFL_IMPORTS
+    assert (
+        _boundary_violations(
+            source,
+            forbidden=BAYESIAN_FORBIDDEN_MODULE_PREFIXES,
+            banned=BAYESIAN_BANNED_NAMES,
+            forbidden_string_keys=BAYESIAN_FORBIDDEN_STRING_KEYS,
+        )
+        == []
+    )
+
+    reachable, _ = _reachable_definitions(source, sorted(BAYESIAN_POLICY_ROOTS))
+    assert reachable <= BAYESIAN_ALLOWED_ONLINE_HELPERS, (
+        "Bayesian online path reached un-approved helpers: "
+        f"{sorted(reachable - BAYESIAN_ALLOWED_ONLINE_HELPERS)}"
+    )
+    assert BAYESIAN_REQUIRED_ONLINE_HELPERS <= reachable, (
+        "Bayesian online path lost required helpers: "
+        f"{sorted(BAYESIAN_REQUIRED_ONLINE_HELPERS - reachable)}"
+    )
+
+    # The only artifact leaf surface the policy may import is the approved trio.
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and _full_module(node) == "dfl_sim.bayesian_artifact"
+        ):
+            imported.update(alias.name for alias in node.names)
+    assert imported == BAYESIAN_ALLOWED_ARTIFACT_IMPORTS
+
+
+def test_validation_reference_policy_reaches_only_local_seam_helpers() -> None:
+    source = POLICY_MODULE.read_text(encoding="utf-8")
+    reachable, _ = _reachable_definitions(
+        source, sorted(VALIDATION_REFERENCE_ROOTS)
+    )
+    assert reachable <= VALIDATION_REFERENCE_ALLOWED_HELPERS, (
+        "validation reference reached un-approved helpers: "
+        f"{sorted(reachable - VALIDATION_REFERENCE_ALLOWED_HELPERS)}"
+    )
+    assert VALIDATION_REFERENCE_REQUIRED_HELPERS <= reachable, (
+        "validation reference lost required helpers: "
+        f"{sorted(VALIDATION_REFERENCE_REQUIRED_HELPERS - reachable)}"
+    )
+
+
+def test_validation_reference_boundary_checker_detects_planted_leak() -> None:
+    # A validation-reference-shaped implementation that reaches privileged
+    # evaluator/attack state must be rejected by the same static checker.
+    source = textwrap.dedent(
+        """
+        from dfl_sim.evaluator import GlobalMetrics
+
+        class ValidationReferencePolicy:
+            def select_weights(self, observation):
+                labels = observation.evaluator_labels
+                kappa = observation.attack_config.kappa
+                return labels, kappa
+        """
+    )
+    violations = _boundary_violations(
+        source,
+        forbidden=BAYESIAN_FORBIDDEN_MODULE_PREFIXES,
+        banned=BAYESIAN_BANNED_NAMES,
+        forbidden_string_keys=BAYESIAN_FORBIDDEN_STRING_KEYS,
+    )
+    assert any("dfl_sim.evaluator" in v for v in violations)
+    assert any("evaluator_labels" in v for v in violations)
+    assert any("attack_config" in v for v in violations)
+    assert any("kappa" in v for v in violations)
+
+
+def test_online_modules_cannot_import_or_reach_calibration_symbols() -> None:
+    """policy.py and bayesian_artifact.py stay outside the offline calibrator."""
+
+    for path in (POLICY_MODULE, BAYESIAN_ARTIFACT_MODULE):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imports = _dfl_imports(tree)
+        for prefix in CALIBRATION_MODULE_PREFIXES:
+            assert prefix not in imports, f"{path.name} imports {prefix}"
+
+        found = {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and node.id in CALIBRATION_OFFLINE_SYMBOLS
+        } | {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr in CALIBRATION_OFFLINE_SYMBOLS
+        }
+        assert found == set(), (
+            f"{path.name} names offline calibration symbols: {sorted(found)}"
+        )
+
+
+def test_calibration_boundary_checker_detects_representative_leaks() -> None:
+    source = textwrap.dedent(
+        """
+        from dfl_sim.calibration_scoring import collect_calibration
+        from dfl_sim.calibration_estimator import estimate_artifact
+        from dfl_sim.calibration_config import load_calibration_config
+
+        def leak(config, dataset):
+            collection = collect_calibration(config, dataset=dataset)
+            design_indices = collection.design_indices
+            return collection, design_indices
+        """
+    )
+    violations = _boundary_violations(
+        source,
+        forbidden=CALIBRATION_MODULE_PREFIXES,
+        banned=CALIBRATION_OFFLINE_SYMBOLS,
+    )
+    assert any("dfl_sim.calibration_scoring" in v for v in violations)
+    assert any("dfl_sim.calibration_estimator" in v for v in violations)
+    assert any("dfl_sim.calibration_config" in v for v in violations)
+    assert any("collect_calibration" in v for v in violations)
+    assert any("design_indices" in v for v in violations)
+
+
+def test_bayesian_boundary_checker_detects_representative_leaks() -> None:
+    source = textwrap.dedent(
+        """
+        import torch
+        from dfl_sim.evaluator import GlobalMetrics
+        from dfl_sim.data import load_design_split
+        from dfl_sim.models import Model
+        from dfl_sim.topology import load_topology
+
+        def leak(state_dict, artifact, observation):
+            true_types = state_dict["true_types"]
+            metrics = artifact["global_metrics"]
+            tensor = state_dict["tensor"]
+            labels = artifact["labels"]
+            return true_types, metrics, tensor, labels
+        """
+    )
+    violations = _boundary_violations(
+        source,
+        forbidden=BAYESIAN_FORBIDDEN_MODULE_PREFIXES,
+        banned=BAYESIAN_BANNED_NAMES,
+        forbidden_string_keys=BAYESIAN_FORBIDDEN_STRING_KEYS,
+    )
+    assert any("import torch" in v for v in violations)
+    assert any("dfl_sim.evaluator" in v for v in violations)
+    assert any("dfl_sim.data" in v for v in violations)
+    assert any("dfl_sim.models" in v for v in violations)
+    assert any("dfl_sim.topology" in v for v in violations)
+    assert any("state_dict" in v for v in violations)
+    assert any("true_types" in v for v in violations)
+    assert any("global_metrics" in v for v in violations)
+    # Privileged raw-dict string keys are caught even when spelled as literals.
+    assert any("forbidden string key" in v for v in violations)
+
+
+# --------------------------------------------------------------------------- #
+# Fixture-built Bayesian policy runtime capability walk
+# --------------------------------------------------------------------------- #
+def _fixture_bayesian_config() -> BayesianAggregation:
+    return BayesianAggregation(
+        artifact_dir=str(BAYESIAN_FIXTURE),
+        omega=0.5,
+        degree_cap=4,
+        tie_tolerance=1.0e-9,
+    )
+
+
+def _fixture_neighbor(
+    sender: int = 1,
+    *,
+    disagreement: float = 0.7,
+    relative_norm: float = 0.5,
+    loss_delta: float = -0.5,
+) -> NeighborObservation:
+    return NeighborObservation(
+        sender_id=sender,
+        directional_disagreement=disagreement,
+        relative_norm=relative_norm,
+        loss_delta=loss_delta,
+    )
+
+
+def _fixture_observation(
+    *,
+    node_id: int = 0,
+    round_index: int = 1,
+    neighbors: Sequence[NeighborObservation] = (),
+) -> LocalObservation:
+    return LocalObservation(
+        node_id=node_id,
+        round_index=round_index,
+        epsilon=DEFAULT_EPSILON,
+        neighbors=tuple(neighbors),
+    )
+
+
+class _BayesianRecorder:
+    """Record the real policy's observations while delegating every call."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.seen: list[LocalObservation] = []
+
+    def select_weights(self, observation: LocalObservation) -> WeightProfile:
+        self.seen.append(observation)
+        return self._inner.select_weights(observation)
+
+
+class _PrivilegedSentinel:
+    """Unused privileged state, used to prove the seam rejects enrichment."""
+
+    def __init__(self) -> None:
+        self.ground_truth = "benign"
+        self.compromised_node = 1
+        self.global_metrics = {"accuracy": 1.0}
+        self.model = nn.Linear(1, 1)
+        self.dataset = MNISTShapedDataset(8, seed=7)
+        self.topology = nx.Graph()
+        self.tensor = torch.zeros(2)
+
+
+def test_fixture_built_bayesian_policy_accepts_only_scalar_local_observation() -> None:
+    policy = build_policy(_fixture_bayesian_config(), total_rounds=2)
+    assert isinstance(policy, BayesianPolicy)
+    # Construction-time state is exactly the frozen artifact, the pinned run
+    # length, and an optional observability sink -- never a parameter of
+    # ``select_weights``.
+    assert tuple(f.name for f in dataclasses.fields(BayesianPolicy)) == (
+        "artifact",
+        "total_rounds",
+        "diagnostic_sink",
+        "clock",
+    )
+    signature = inspect.signature(type(policy).select_weights)
+    assert list(signature.parameters) == ["self", "observation"]
+
+    observation = _fixture_observation(neighbors=(_fixture_neighbor(1),))
+    assert _schema_violations(observation) == []
+    assert _forbidden_reachable(observation) == []
+
+    profile = policy.select_weights(observation)
+    assert isinstance(profile, WeightProfile)
+    assert profile.participant_ids == (0, 1)
+    assert profile.multipliers[0] == 1.0
+    assert abs(sum(profile.weights) - 1.0) <= 1e-9
+    assert _forbidden_reachable(profile) == []
+
+    # Non-LocalObservation inputs fail closed, including duck-typed and
+    # privileged-enriched lookalikes and any model tensor / raw state dict.
+    sentinel = _PrivilegedSentinel()
+    assert _forbidden_reachable(sentinel)  # the sentinel really carries privilege
+    duck = pytypes.SimpleNamespace(
+        node_id=0,
+        round_index=1,
+        epsilon=DEFAULT_EPSILON,
+        neighbors=(_fixture_neighbor(1),),
+        ground_truth="benign",
+        evaluator=sentinel,
+    )
+    for bad in (duck, sentinel, torch.zeros(2), {"w": torch.zeros(2)}, None, "obs"):
+        with pytest.raises(PolicyError):
+            policy.select_weights(bad)  # type: ignore[arg-type]
+
+
+def test_enriched_local_observation_subclass_is_rejected() -> None:
+    policy = build_policy(_fixture_bayesian_config(), total_rounds=2)
+    sentinel = _PrivilegedSentinel()
+
+    class EnrichedObservation(LocalObservation):
+        pass
+
+    enriched = EnrichedObservation(
+        node_id=0,
+        round_index=1,
+        epsilon=DEFAULT_EPSILON,
+        neighbors=(_fixture_neighbor(1),),
+    )
+    object.__setattr__(enriched, "ground_truth", "benign")
+    object.__setattr__(enriched, "evaluator", sentinel)
+
+    # The subclass would otherwise smuggle an unused privileged graph past the
+    # seam; the exact-type guard refuses it.
+    assert _forbidden_reachable(enriched)
+    with pytest.raises(PolicyError):
+        policy.select_weights(enriched)
+
+
+def test_bayesian_selection_diagnostics_expose_only_bounded_fields() -> None:
+    records: list[BayesianDiagnostic] = []
+    artifact = load_bayesian_artifact(BAYESIAN_FIXTURE)
+    assert isinstance(artifact, BayesianArtifact)
+    policy = build_bayesian_policy(
+        artifact, total_rounds=2, diagnostic_sink=records.append
+    )
+
+    # Round 1 resolves the fixture's only covered progress bin -> success.
+    success_profile = policy.select_weights(
+        _fixture_observation(round_index=1, neighbors=(_fixture_neighbor(1),))
+    )
+    success = records[-1]
+    assert success.fallback_reason is None
+    assert success.chosen_multipliers == success_profile.multipliers
+    assert success.candidate_count == 3  # |{0, omega, 1}| ** degree 1
+    assert success.pruned is False
+    assert success.degree_bin == "1"
+    assert success.progress == "mid"
+
+    # A missing likelihood cell (uncovered evidence bin) falls back explicitly.
+    policy.select_weights(
+        _fixture_observation(
+            round_index=1,
+            neighbors=(
+                _fixture_neighbor(1, relative_norm=2.0, loss_delta=0.5),
+            ),
+        )
+    )
+    assert records[-1].fallback_reason == FALLBACK_MISSING_LIKELIHOOD
+
+    # An uncovered degree (3) has no prior cells -> explicit missing prior.
+    policy.select_weights(
+        _fixture_observation(
+            round_index=1,
+            neighbors=(
+                _fixture_neighbor(1),
+                _fixture_neighbor(2),
+                _fixture_neighbor(3),
+            ),
+        )
+    )
+    assert records[-1].fallback_reason == FALLBACK_MISSING_PRIOR
+
+    # A round index outside the run length has no progress context.
+    policy.select_weights(
+        _fixture_observation(round_index=5, neighbors=(_fixture_neighbor(1),))
+    )
+    assert records[-1].fallback_reason == FALLBACK_CONTEXT_UNAVAILABLE
+
+    for record in records:
+        assert (
+            tuple(f.name for f in dataclasses.fields(record))
+            == BAYESIAN_DIAGNOSTIC_FIELDS
+        )
+        assert record.fallback_reason is None or (
+            record.fallback_reason in ALLOWED_FALLBACK_REASONS
+        )
+        for entry in record.posterior:
+            assert tuple(f.name for f in dataclasses.fields(entry)) == (
+                "state",
+                "probability",
+            )
+            assert isinstance(entry.state, tuple)
+            assert all(isinstance(value, int) for value in entry.state)
+            assert isinstance(entry.probability, float)
+        assert _forbidden_reachable(record) == []
+        for name in BAYESIAN_BANNED_NAMES:
+            assert not hasattr(record, name)
+
+
+def test_bayesian_policy_receives_clean_observations_through_real_round_engine() -> None:
+    records: list[BayesianDiagnostic] = []
+    artifact = load_bayesian_artifact(BAYESIAN_FIXTURE)
+    inner = build_bayesian_policy(
+        artifact, total_rounds=2, diagnostic_sink=records.append
+    )
+    recorder = _BayesianRecorder(inner)
+
+    _run(policy=recorder)
+
+    assert len(recorder.seen) == 3
+    for observation in recorder.seen:
+        assert _schema_violations(observation) == []
+        assert _forbidden_reachable(observation) == []
+
+    assert len(records) == 3
+    for record in records:
+        assert (
+            tuple(f.name for f in dataclasses.fields(record))
+            == BAYESIAN_DIAGNOSTIC_FIELDS
+        )
+        assert _forbidden_reachable(record) == []
+
+
+def test_generated_calibration_artifact_drives_only_scalar_loader_policy(
+    tmp_path: Path,
+) -> None:
+    """A real published artifact feeds only the existing scalar loader/policy.
+
+    Builds the artifact through the real offline pipeline from the checked-in
+    config, loads it back through the S01 loader, and drives the Bayesian policy
+    through the real round engine. The recorder proves the policy still receives
+    exactly the frozen scalar ``LocalObservation`` and that no calibration
+    design data, hidden type, or tensor is reachable from the observation,
+    profile, or diagnostics.
+    """
+
+    config = load_calibration_config(CALIBRATION_CONFIG_PATH)
+    dataset = MNISTShapedDataset(64, separable=True, seed=11)
+    collection = collect_calibration(config, dataset=dataset)
+    estimated = estimate_calibration(config, collection)
+    published = publish_calibration_artifact(tmp_path / "artifact", estimated)
+
+    loaded = load_bayesian_artifact(published.path)
+    assert isinstance(loaded, BayesianArtifact)
+    assert loaded.manifest.aggregate_digest == published.aggregate_digest
+    # The frozen artifact reaches no privileged runtime object: no dataset,
+    # experiment/attack config, graph, module, or tensor.
+    leaked = _forbidden_reachable(loaded)
+    assert not any(
+        kind.startswith(
+            (
+                "torch.Tensor",
+                "Dataset:",
+                "ExperimentConfig",
+                "AttackConfig",
+                "Module:",
+                "Graph:",
+            )
+        )
+        for kind in leaked
+    ), leaked
+
+    records: list[BayesianDiagnostic] = []
+    inner = build_bayesian_policy(
+        loaded,
+        total_rounds=config.experiment.rounds,
+        diagnostic_sink=records.append,
+    )
+    recorder = _BayesianRecorder(inner)
+
+    run_from_config(
+        config.experiment,
+        dataset=dataset,
+        trainer=_offset_trainer(),
+        policy=recorder,
+    )
+
+    assert len(recorder.seen) == 3 * config.experiment.rounds
+    for observation in recorder.seen:
+        assert _schema_violations(observation) == []
+        assert _forbidden_reachable(observation) == []
+    for record in records:
+        assert (
+            tuple(f.name for f in dataclasses.fields(record))
+            == BAYESIAN_DIAGNOSTIC_FIELDS
+        )
+        assert _forbidden_reachable(record) == []
+
+
+def test_bayesian_config_artifact_and_observation_reject_mutation() -> None:
+    observation = _fixture_observation(neighbors=(_fixture_neighbor(1),))
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        observation.neighbors[0].loss_delta = 9.0  # type: ignore[misc]
+
+    config = _fixture_bayesian_config()
+    with pytest.raises(ValidationError):
+        config.omega = 0.25  # type: ignore[misc]
+
+    artifact = load_bayesian_artifact(BAYESIAN_FIXTURE)
+    with pytest.raises(ValidationError):
+        artifact.manifest.action_space.omega = 0.25  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        artifact.prior_index[1] = ()  # type: ignore[index]

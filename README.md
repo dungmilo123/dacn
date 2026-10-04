@@ -104,6 +104,56 @@ payload: thousands of rounds or dense graphs make the full Cytoscape/Plotly
 redraw the bottleneck, which is why the projection stores only scalars and
 never embeds tensors or duplicate trace content.
 
+## Bayesian defense acceptance (M002)
+
+M002 ships an artifact-backed approximate-myopic Bayesian aggregation policy
+and a documented offline calibration path. The held-out chain3 acceptance
+sequence is fully offline (MNIST download stays disabled; the automated test
+injects deterministic MNIST-shaped in-process data through the existing loader
+seams and does not touch the network):
+
+```bash
+# 1. Generate the frozen schema-v1 artifact (four tiny reference episodes).
+dfl calibrate configs/calibrate_chain3.yaml --output runs/bayesian_chain3_artifact
+
+# 2. Held-out fixed-poison pair: the generated artifact drives the Bayesian
+#    policy, and the otherwise-identical local validation-loss reference
+#    (tolerance pinned to 0.0) is the comparator.
+dfl run configs/bayesian_fixed_poison_3node.yaml --output runs/poison_bayesian --bayesian-report
+dfl run configs/validation_reference_fixed_poison_3node.yaml --output runs/poison_reference
+
+# 3. Held-out clean pair: M001's plain-average baseline versus the
+#    otherwise-identical Bayesian run.
+dfl run configs/bayesian_clean_3node.yaml --output runs/clean_bayesian
+dfl run configs/clean_3node.yaml --output runs/clean_plain
+```
+
+The fixed-poison pair is byte-for-byte identical in every non-aggregation field
+(same seed, topology, data, training, attack, evaluation, and trace settings),
+so any selected-profile difference is attributable to aggregation alone. The
+clean pair likewise differs only in aggregation. The checked-in acceptance seed
+is distinct from every calibration episode seed. The generated artifact must be
+produced by `dfl calibrate`; the S01 hand fixture
+(`tests/fixtures/bayesian_v1`) is a different artifact and is not accepted by
+the generated-artifact location.
+
+Reported numbers:
+
+* `--bayesian-report` prints one canonical `dfl_sim: bayesian_report {...}`
+  stdout record only after the trace is atomically published: artifact digest,
+  selection count, benign-receiver coverage and support-weighted total-variation
+  mismatch, exact fallback reason counts (including explicit zeros) and rate,
+  pruning count, candidate totals/max, and elapsed selection-time
+  total/min/max. Reporting is observability only: it never writes a file into
+  the trace directory and leaves canonical trace bytes unchanged.
+* Acceptance gate: final-round mean post-commit evaluation loss for the clean
+  Bayesian run must be `<=` the plain-average baseline plus `1e-9`; final mean
+  accuracy is reported but is not a second gate. On the fixed-poison pair at
+  least one benign `(round, node)` selects different participant-aligned
+  multipliers than the validation-loss reference.
+
+The automated end-to-end test is `tests/test_bayesian_acceptance.py`.
+
 ## Testing
 
 Run the ordinary offline suite (no browser binary required):

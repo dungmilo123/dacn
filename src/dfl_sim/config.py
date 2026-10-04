@@ -42,6 +42,10 @@ __all__ = [
     "MIN_WS_NODES",
     "AggregationConfig",
     "AttackConfig",
+    "BAYESIAN_DEGREE_CAP",
+    "BAYESIAN_OMEGA",
+    "BAYESIAN_TIE_TOLERANCE",
+    "BayesianAggregation",
     "Chain3Topology",
     "ConfigError",
     "DataConfig",
@@ -55,6 +59,7 @@ __all__ = [
     "TopologyConfig",
     "TraceConfig",
     "TrainingConfig",
+    "ValidationReferenceAggregation",
     "WattsStrogatzTopology",
     "canonical_dump",
     "load_config",
@@ -88,6 +93,17 @@ MAX_SNAPSHOT_CADENCE = MAX_ROUNDS
 
 #: D016 fixed intensity table: the only legal kappa values, keyed by name.
 ATTACK_KAPPAS: dict[str, float] = {"zero": 0.0, "weak": 2.0, "strong": 5.0}
+
+#: Pinned first-pass Bayesian artifact values (D021). The checked-in schema-v1
+#: fixture declares exactly these, and the strict config accepts no others, so a
+#: config and a loaded artifact can never silently disagree on the finite action
+#: space, pruning cap, or tie tolerance. S02 owns widening these later.
+BAYESIAN_OMEGA = 0.5
+BAYESIAN_DEGREE_CAP = 4
+BAYESIAN_TIE_TOLERANCE = 1e-9
+
+#: Maximum length of the configured artifact directory path string.
+MAX_ARTIFACT_DIR_LEN = 1024
 
 
 class ConfigError(ValueError):
@@ -267,12 +283,78 @@ class FixedSimilarityAggregation(_StrictModel):
     downweight_multiplier: float = Field(gt=0.0, lt=1.0)
 
 
+class ValidationReferenceAggregation(_StrictModel):
+    """D026 local validation-loss reference selector.
+
+    ``tolerance`` is the inclusive, finite, non-negative threshold on a
+    delivered neighbor's scalar ``loss_delta``: the reference policy accepts a
+    neighbor (multiplier ``1``) exactly when ``loss_delta <= tolerance`` and
+    rejects it (multiplier ``0``) otherwise. It deliberately matches the
+    online authority of the Bayesian selector -- only the scalar local seam --
+    so the fixed-poison acceptance can compare two policies that differ in
+    aggregation alone. The acceptance configs pin one documented value, so
+    the fixed-poison reference run stays deterministic.
+    """
+
+    kind: Literal["validation_reference"]
+    tolerance: float = Field(ge=0.0, allow_inf_nan=False)
+
+
+class BayesianAggregation(_StrictModel):
+    """Artifact-backed exact Bayesian best response selector (R013/R015/R016).
+
+    ``artifact_dir`` is the required directory of the frozen schema-v1 artifact;
+    it is read and validated exactly once by :func:`~dfl_sim.policy.build_policy`
+    before any round starts. ``omega``, ``degree_cap``, and ``tie_tolerance`` are
+    explicit and pinned to the D021 first-pass values (they must equal the loaded
+    artifact's action-space provenance), so a config and artifact can never
+    disagree about the finite action space, pruning cap, or tie tolerance.
+
+    The directory is a plain string here: config parsing never touches the
+    filesystem, and the artifact loader rejects symlinks and non-regular files.
+    """
+
+    kind: Literal["bayesian"] = "bayesian"
+    artifact_dir: str = Field(min_length=1, max_length=MAX_ARTIFACT_DIR_LEN)
+    omega: float = Field(gt=0.0, lt=1.0)
+    degree_cap: int = Field(ge=1, le=64)
+    tie_tolerance: float = Field(ge=0.0)
+
+    @field_validator("artifact_dir")
+    @classmethod
+    def _reject_control_chars(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("artifact_dir must not contain NUL bytes")
+        return value
+
+    @model_validator(mode="after")
+    def _pinned_first_pass_values(self) -> "BayesianAggregation":
+        if self.omega != BAYESIAN_OMEGA:
+            raise ValueError(
+                "bayesian omega must equal the pinned first-pass value "
+                f"{BAYESIAN_OMEGA!r}, got {self.omega!r}"
+            )
+        if self.degree_cap != BAYESIAN_DEGREE_CAP:
+            raise ValueError(
+                "bayesian degree_cap must equal the pinned first-pass value "
+                f"{BAYESIAN_DEGREE_CAP!r}, got {self.degree_cap!r}"
+            )
+        if self.tie_tolerance != BAYESIAN_TIE_TOLERANCE:
+            raise ValueError(
+                "bayesian tie_tolerance must equal the pinned first-pass value "
+                f"{BAYESIAN_TIE_TOLERANCE!r}, got {self.tie_tolerance!r}"
+            )
+        return self
+
+
 # Discriminated union on the ``kind`` tag; unknown aggregation kinds fail fast.
 AggregationConfig = Annotated[
     Union[
         LocalOnlyAggregation,
         PlainAverageAggregation,
         FixedSimilarityAggregation,
+        ValidationReferenceAggregation,
+        BayesianAggregation,
     ],
     Field(discriminator="kind"),
 ]
@@ -333,16 +415,27 @@ class ExperimentConfig(_StrictModel):
 
 
 def parse_config_text(text: str, *, source: str = "<string>") -> ExperimentConfig:
-    """Parse and validate YAML ``text`` into an :class:`ExperimentConfig`.
+    """Parse and validate YAML (or canonical JSON) ``text``.
+
+    Config files are YAML, but the schema-v1 trace stores its resolved config
+    snapshot as canonical JSON (:func:`canonical_dump`). Canonical JSON and
+    YAML 1.1 disagree on bare exponent scalars (``1e-09``): JSON resolves them
+    as floats, YAML as strings. JSON is therefore tried first and YAML is used
+    as the fallback, so a canonical snapshot round-trips exactly while ordinary
+    YAML keeps its previous behavior.
 
     Raises :class:`ConfigError` with the source path and offending fields on any
-    malformed YAML, non-mapping root, or validation failure.
+    malformed input, non-mapping root, or validation failure.
     """
 
+    raw: object
     try:
-        raw = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"invalid YAML in {source}: {exc}") from exc
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            raw = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"invalid YAML in {source}: {exc}") from exc
 
     if raw is None:
         raise ConfigError(f"empty config in {source}: expected a mapping")
