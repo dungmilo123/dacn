@@ -14,6 +14,10 @@ uv sync
 # S04 production command: publish a complete schema-v1 trace directory.
 uv run dfl run configs/clean_3node.yaml --output runs/clean
 
+# S01 baseline study: publish one paired schema-v1 trace per policy/seed cell
+# plus a versioned baseline manifest.
+uv run dfl evaluate STUDY.yaml --output runs/baseline_study
+
 # S05 read-only replay viewer for a completed trace (localhost only).
 uv run dfl view runs/clean --port 8050
 
@@ -153,6 +157,70 @@ Reported numbers:
   multipliers than the validation-loss reference.
 
 The automated end-to-end test is `tests/test_bayesian_acceptance.py`.
+
+## Baseline study (`dfl evaluate`)
+
+```bash
+uv run dfl evaluate STUDY.yaml --output runs/baseline_study
+```
+
+`dfl evaluate STUDY --output DIR` runs one strict, fairness-enforcing
+**baseline study**: every `(seed, policy)` cell is derived from the study's one
+frozen base experiment by overriding only `seed` and `aggregation`, so all six
+policies of a seed share the same partition, model initialization, and
+attacker -- aggregation is the sole experimental variable. It atomically
+publishes `baseline-manifest.json` plus one complete schema-v1 trace per cell
+under `DIR/traces/<policy>/seed-<n>/`, and refuses to publish anything if even
+one cell fails.
+
+The required six-policy panel (stable ids):
+
+| id | Policy |
+| --- | --- |
+| `local_only` | local-only (no aggregation) |
+| `plain_average` | uniform mean of self plus every sender |
+| `fixed_similarity` | D017 fixed directional-similarity filter |
+| `trust_weighted` | D029 `exp(-beta * max(loss_delta, 0))` trust weighting |
+| `balance` | D028 faithful BALANCE (Fang et al., ACM CCS 2024, Algorithm 3) |
+| `bayesian` | M002 artifact-backed approximate-myopic Bayesian policy |
+
+**Provenance label.** `data_provenance` is explicit and appears verbatim in
+every manifest entry: `real_mnist` consumes the production MNIST loaders, while
+`injected` requires the caller to supply an in-memory dataset pair (used by the
+offline integration tests, which never touch the network).
+
+**Citation metadata.** Each panel entry carries `citation`/`implementation`
+metadata. The `balance` entry is pinned to the D028 external reference
+(`venue: ACM CCS 2024`, `identifier: arXiv:2406.10416v4`,
+`algorithm: Algorithm 3`); the other entries are project comparators. The
+manifest also records each aggregation's `hyperparameters` and a stable
+`hyperparameter_digest`, plus the loaded Bayesian `artifact_digest`.
+
+**Matched-budget interpretation.** The study declares one `candidate_budget`,
+`selection_seed`, and `selection_provenance`. Every tunable policy
+(`fixed_similarity`, `trust_weighted`, `balance`, `bayesian`) must declare the
+same positive budget and selection provenance, so no method gets a larger
+tuning search than another; the structurally parameter-free baselines
+(`local_only`, `plain_average`) must instead declare `mode: exempt` with a zero
+budget. A budget or provenance mismatch is rejected before any run.
+
+The manifest is deterministic and environment-independent (artifact paths are
+scrubbed to a placeholder and the artifact's own digest is recorded), so two
+identical studies produce byte-identical manifest bytes.
+
+On success, stdout carries exactly one stable marker naming the manifest and
+output directory (`dfl_sim: baseline study manifest=... output=...`); the
+per-cell progress lines go to stderr and contain only the bounded policy id and
+seed. Any malformed spec, existing destination, budget mismatch, missing
+artifact, or failed cell exits nonzero with a concise stderr line (naming the
+policy and seed) and publishes no manifest.
+
+**Inspecting an emitted trace.** Each cell is a normal schema-v1 trace, so any
+emitted trace can be replayed with the read-only viewer:
+
+```bash
+uv run dfl view runs/baseline_study/traces/balance/seed-11
+```
 
 ## Testing
 

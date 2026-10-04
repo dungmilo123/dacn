@@ -1,6 +1,6 @@
 """Command-line entry points for the DFL simulator.
 
-Three invocation forms are supported:
+The following invocation forms are supported:
 
 * ``dfl run CONFIG --output TRACE_DIR`` (console script ``dfl``) is the S04
   production command: it runs the episode and atomically publishes a complete
@@ -9,6 +9,10 @@ Three invocation forms are supported:
   the S02 offline-calibration command: it runs the strict calibration config
   through the real reference simulator and atomically publishes a frozen
   schema-v1 Bayesian artifact directory.
+* ``dfl evaluate STUDY.yaml --output DIR`` (console script ``dfl``) is the S01
+  baseline-study command: it runs the strict six-policy paired panel through
+  the real policy factory/simulator and atomically publishes one schema-v1
+  trace per (policy, seed) cell plus a versioned baseline manifest.
 * ``dfl view TRACE_DIR [--port PORT]`` (console script ``dfl``) is the S05
   read-only local replay server: it validates and fully projects the trace
   once, then serves the Dash viewer on ``127.0.0.1`` only.
@@ -37,6 +41,7 @@ from .calibration_estimator import CalibrationEstimationError
 from .calibration_scoring import CalibrationScoringError
 from .config import BayesianAggregation, ConfigError, load_config
 from .data import DataError
+from .evaluation import EvaluationError, run_baseline_study
 from .evaluator import EvaluatorError
 from .models import ModelError
 from .node import TrainingError
@@ -50,6 +55,7 @@ from .viewer import ViewerError, create_viewer_app
 
 __all__ = [
     "build_calibrate_parser",
+    "build_evaluate_parser",
     "build_parser",
     "build_run_parser",
     "build_view_parser",
@@ -63,6 +69,16 @@ VIEWER_DEFAULT_PORT = 8050
 
 #: Stable stdout marker prefixing the one canonical Bayesian evidence record.
 BAYESIAN_REPORT_MARKER = "dfl_sim: bayesian_report "
+
+#: Per-cell progress marker emitted to stderr as each (policy, seed) cell runs.
+#: It carries only the bounded policy id and seed, never YAML/artifact content,
+#: and is written to stderr so stdout stays a single machine-readable success
+#: marker.
+EVALUATE_PROGRESS_MARKER = "dfl_sim: evaluate cell "
+
+#: Stable stdout marker for a published baseline study; it names the manifest
+#: and output directory so the command's one success line is unambiguous.
+EVALUATE_SUCCESS_MARKER = "dfl_sim: baseline study "
 
 # Domain failures that should be reported as a clean CLI error (nonzero exit)
 # rather than an uncaught traceback.
@@ -93,6 +109,13 @@ _CALIBRATION_ERRORS = _CLI_ERRORS + (
     CalibrationEstimationError,
     CalibrationPublishError,
 )
+
+# The bounded baseline-study failure family: a malformed strict study spec, a
+# non-publishing safety rejection, or any per-cell simulation/artifact/trace
+# failure the runner already wrapped with its policy id and seed. Each is
+# reported as a concise stderr line with a nonzero exit and never a stack trace
+# or a partial/success manifest.
+_EVALUATE_ERRORS = _CLI_ERRORS + (EvaluationError,)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -190,6 +213,38 @@ def build_calibrate_parser() -> argparse.ArgumentParser:
             "Destination directory for the frozen artifact. Must not exist "
             "and must not alias the config or data root; published "
             "atomically after staged loader validation."
+        ),
+    )
+    return parser
+
+
+def build_evaluate_parser() -> argparse.ArgumentParser:
+    """Build the ``dfl evaluate`` parser that publishes a baseline study."""
+
+    parser = argparse.ArgumentParser(
+        prog="dfl evaluate",
+        description=(
+            "Run a strict six-policy paired baseline study through the real "
+            "policy factory and simulator, and atomically publish one "
+            "schema-v1 trace per (policy, seed) cell plus a versioned "
+            "baseline manifest."
+        ),
+    )
+    parser.add_argument(
+        "study",
+        help=(
+            "Path to a strict baseline-study YAML/JSON spec declaring the "
+            "frozen base experiment, bounded seeds, and the six-policy panel."
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        metavar="DIR",
+        required=True,
+        help=(
+            "Destination directory for the study. Must not exist and must "
+            "not alias the study spec; published atomically after every cell "
+            "and every trace validates."
         ),
     )
     return parser
@@ -333,6 +388,35 @@ def _run_calibrate(config_path: str, output: str) -> int:
     return 0
 
 
+def _run_evaluate(study_path: str, output: str) -> int:
+    """Run the paired baseline study and publish its manifest atomically."""
+
+    def _progress(seed: int, policy_id: str) -> None:
+        # Progress is bounded (policy id + seed only) and goes to stderr so
+        # stdout stays a single stable success marker. It never echoes the
+        # untrusted study YAML or artifact contents.
+        print(
+            f"{EVALUATE_PROGRESS_MARKER}policy={policy_id} seed={int(seed)}",
+            file=sys.stderr,
+        )
+
+    try:
+        result = run_baseline_study(study_path, output, progress=_progress)
+    except _EVALUATE_ERRORS as exc:
+        print(f"dfl_sim: error: {exc}", file=sys.stderr)
+        return 1
+
+    manifest = result.manifest
+    print(
+        f"{EVALUATE_SUCCESS_MARKER}manifest={result.manifest_path} "
+        f"output={result.output_path} "
+        f"policies={len(manifest['panel'])} "
+        f"seeds={len(manifest['seeds'])} "
+        f"cells={len(result.cells)}"
+    )
+    return 0
+
+
 def _run_view(trace_dir: str, port: int) -> int:
     """Validate a trace, then serve the read-only replay on loopback."""
 
@@ -386,6 +470,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         calibrate_parser = build_calibrate_parser()
         calibrate_args = calibrate_parser.parse_args(args_list[1:])
         return _run_calibrate(calibrate_args.config, calibrate_args.output)
+
+    if args_list and args_list[0] == "evaluate":
+        evaluate_parser = build_evaluate_parser()
+        evaluate_args = evaluate_parser.parse_args(args_list[1:])
+        return _run_evaluate(evaluate_args.study, evaluate_args.output)
 
     if args_list and args_list[0] == "view":
         view_parser = build_view_parser()
