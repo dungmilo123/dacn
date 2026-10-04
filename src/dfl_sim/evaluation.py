@@ -80,6 +80,14 @@ from .evaluation_config import (
     study_digest,
 )
 from .run import DatasetLoader, run_from_config
+from .study_placement import (
+    PlacementError,
+    PlacementResolution,
+    placement_contract_digest,
+    placement_contract_payload,
+    placement_freeze_payload,
+    resolve_placement,
+)
 from .trajectory import SCHEMA_VERSION, TraceReader, TrajectoryError
 
 __all__ = [
@@ -327,36 +335,127 @@ class HeldOutStudyResult:
 # Derivation, pairing, and identity
 # --------------------------------------------------------------------------- #
 def build_cell_config(
-    base: ExperimentConfig, aggregation: AggregationConfig, seed: int
+    base: ExperimentConfig,
+    aggregation: AggregationConfig,
+    seed: int,
+    *,
+    placement: str | None = None,
+    require_varied_degrees: bool = False,
 ) -> ExperimentConfig:
     """Derive one cell config from the frozen base.
 
     Only ``seed`` and ``aggregation`` may differ from the base; both are
     already-validated typed values, so ``model_copy`` is safe and cannot widen
     an invariant the base validator already enforced.
+
+    When ``placement`` is supplied the compromised node is **not** taken from
+    the base: it is resolved by degree rank on the realized seed-derived
+    topology (R020/D040) before the config is returned, so every policy in the
+    cell observes the same realized graph and attacker placement.
     """
 
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise EvaluationError(f"seed must be an integer, got {seed!r}")
-    return base.model_copy(update={"seed": int(seed), "aggregation": aggregation})
+    config = base.model_copy(
+        update={"seed": int(seed), "aggregation": aggregation}
+    )
+    if placement is not None:
+        try:
+            resolution = resolve_placement(
+                config,
+                placement,
+                require_varied=require_varied_degrees,
+            )
+        except PlacementError as exc:
+            raise EvaluationError(str(exc)) from exc
+        config = apply_placement_resolution(config, resolution)
+    return config
 
 
-def compute_shared_input_digest(config: ExperimentConfig) -> str:
+def apply_placement_resolution(
+    config: ExperimentConfig, resolution: PlacementResolution
+) -> ExperimentConfig:
+    """Return ``config`` with the resolved degree-rank node as the scalar attacker."""
+
+    attack = config.attack.model_copy(
+        update={"compromised_node": int(resolution.node)}
+    )
+    return config.model_copy(update={"attack": attack})
+
+
+def _resolve_study_placements(
+    study: BaselineStudyConfig,
+    seeds: Sequence[int],
+) -> dict[int, PlacementResolution]:
+    """Resolve one degree-ranked placement per seed for an opt-in study.
+
+    Returns an empty mapping for a legacy study without a placement contract,
+    so the existing scalar-node path is byte-for-byte unchanged.
+    """
+
+    contract = getattr(study, "placement", None)
+    if contract is None:
+        return {}
+    resolutions: dict[int, PlacementResolution] = {}
+    for seed in sorted(int(seed) for seed in seeds):
+        probe = build_cell_config(study.base, study.base.aggregation, seed)
+        try:
+            resolutions[seed] = resolve_placement(
+                probe,
+                contract.placement,
+                require_varied=contract.require_varied_degrees,
+            )
+        except PlacementError as exc:
+            raise EvaluationError(str(exc)) from exc
+    return resolutions
+
+
+def _placement_study_payload(
+    study: BaselineStudyConfig,
+    placements: Mapping[int, PlacementResolution],
+) -> dict | None:
+    """The environment-independent placement block for digest/manifest binding."""
+
+    contract = getattr(study, "placement", None)
+    if contract is None:
+        return None
+    return {
+        "contract": placement_contract_payload(
+            contract.placement, graph_kind=contract.graph_kind
+        ),
+        "contract_digest": placement_contract_digest(
+            contract.placement, graph_kind=contract.graph_kind
+        ),
+        "resolutions": placement_freeze_payload(placements),
+    }
+
+
+def compute_shared_input_digest(
+    config: ExperimentConfig, *, placement: object | None = None
+) -> str:
     """SHA-256 over every config dimension except the paired seed/aggregation.
 
     The digest captures the shared experiment inputs (data, training, topology,
     model, attack, evaluation, trace) so paired cells can be proven to differ
-    only in the two intended dimensions.
+    only in the two intended dimensions. When ``placement`` is supplied (an
+    opt-in degree-placement study) the placement contract and per-seed realized
+    graph/rank identities are folded into the digest, so the frozen placement
+    is bound to the shared-input identity. An absent ``placement`` leaves the
+    legacy digest bytes unchanged.
     """
 
     payload = config.model_dump(mode="json")
     payload.pop("seed", None)
     payload.pop("aggregation", None)
+    if placement is not None:
+        payload["placement"] = placement
     return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
 
 
 def validate_shared_inputs(
     configs: Sequence[ExperimentConfig],
+    *,
+    placement: object | None = None,
 ) -> str:
     """Assert every cell config shares the same non-paired inputs.
 
@@ -364,7 +463,10 @@ def validate_shared_inputs(
     any config differs in a dimension other than ``seed``/``aggregation``.
     """
 
-    digests = {compute_shared_input_digest(config) for config in configs}
+    digests = {
+        compute_shared_input_digest(config, placement=placement)
+        for config in configs
+    }
     if len(digests) != 1:
         raise EvaluationError(
             "paired cell configs differ in a non-paired dimension; expected a "
@@ -541,6 +643,7 @@ def _manifest_entry(
     seed: int,
     config: ExperimentConfig,
     artifact_digest: str | None,
+    resolution: PlacementResolution | None = None,
     match: AblationMatchSummary | None = None,
 ) -> dict:
     relative = _relative_trace_path(policy.id, seed)
@@ -561,6 +664,8 @@ def _manifest_entry(
         "status": "complete",
         "trace_path": relative,
     }
+    if resolution is not None:
+        entry["placement"] = resolution.identity_payload()
     ablation = ablation_entry_metadata(match, policy.id)
     if ablation is not None:
         entry[ABLATION_METADATA_KEY] = ablation
@@ -572,6 +677,7 @@ def _build_manifest(
     study: BaselineStudyConfig,
     shared_input_digest: str,
     cells: tuple[BaselineCell, ...],
+    placement: Mapping[str, object] | None = None,
     match: AblationMatchSummary | None = None,
 ) -> dict:
     entries = sorted(
@@ -596,6 +702,8 @@ def _build_manifest(
         "entries": entries,
         "status": "complete",
     }
+    if placement is not None:
+        manifest["placement"] = dict(placement)
     ablation = ablation_manifest_metadata(match)
     if ablation is not None:
         manifest[ABLATION_METADATA_KEY] = ablation
@@ -906,6 +1014,7 @@ def _checkpoint_record(
     artifact_digest: str | None,
     relative: str,
     reused: bool,
+    resolution: PlacementResolution | None = None,
     match: AblationMatchSummary | None = None,
     extra: Mapping[str, object] | None = None,
 ) -> dict:
@@ -913,7 +1022,10 @@ def _checkpoint_record(
 
     For an opt-in ablation study the checkpoint additionally binds the matched
     calibration-input digest and assumption version, so a resume can prove the
-    reused trace's artifact set is the one revalidated in this invocation.
+    reused trace's artifact set is the one revalidated in this invocation. For
+    an opt-in placement study it binds the realized per-seed placement identity
+    and the contract digest, so a resume recomputes and checks them instead of
+    trusting cached metadata.
     """
 
     record: dict = {
@@ -934,6 +1046,13 @@ def _checkpoint_record(
         "shared_input_digest": shared_input_digest,
         "reused": bool(reused),
     }
+    contract = getattr(study, "placement", None)
+    if contract is not None:
+        record["placement_contract_digest"] = placement_contract_digest(
+            contract.placement, graph_kind=contract.graph_kind
+        )
+    if resolution is not None:
+        record["placement"] = resolution.identity_payload()
     if match is not None:
         record["ablation_match_digest"] = match.matched_calibration_input_digest
         record["ablation_protocol_version"] = match.protocol_version
@@ -949,13 +1068,17 @@ def _checkpoint_record_reusable(
     expected_config_digest: str,
     expected_artifact_digest: str | None,
     label: str,
+    expected_placement: Mapping[str, object] | None = None,
 ) -> bool:
     """Decide whether a checkpoint cell may be reused, or fail closed.
 
     A schedule or artifact digest mismatch means the checkpoint's evidence is
     not from this exact study, so it fails closed rather than mixing evidence.
     A missing record or a redacted-config mismatch simply means the cell is
-    recomputed from scratch.
+    recomputed from scratch. When the study has a placement contract the
+    recomputed placement identity is checked against the record, and any
+    mismatch or missing identity fails closed rather than trusting cached
+    metadata.
     """
 
     if record is None:
@@ -974,6 +1097,19 @@ def _checkpoint_record_reusable(
             f"{observed_artifact} does not match current "
             f"{expected_artifact_digest}"
         )
+    if expected_placement is not None:
+        observed_placement = record.get("placement")
+        if not isinstance(observed_placement, Mapping):
+            raise EvaluationError(
+                f"{label} resume checkpoint is missing placement identity"
+            )
+        for key, value in expected_placement.items():
+            if observed_placement.get(key) != value:
+                raise EvaluationError(
+                    f"{label} resume placement {key} mismatch: checkpoint "
+                    f"{observed_placement.get(key)} does not match current "
+                    f"{value}"
+                )
     if record.get("config_digest") != expected_config_digest:
         return False
     if record.get("status") != "complete":
@@ -1047,12 +1183,13 @@ def _resume_cell(
     label: str,
     validator: TraceValidator,
     measure: bool,
+    placement_identity: Mapping[str, object] | None = None,
 ) -> tuple[bool, dict | None]:
     """Try to reuse a manifest-matched checkpoint cell.
 
     Returns ``(reused, metrics)``. A digest-mismatched or unreadable reuse
-    candidate is either rejected up front (schedule/artifact mismatch fails
-    closed) or silently recomputed (missing trace, unreadable trace, or a
+    candidate is either rejected up front (schedule/artifact/placement mismatch
+    fails closed) or silently recomputed (missing trace, unreadable trace, or a
     redacted-config mismatch), so stale evidence is never mixed into a
     published study.
     """
@@ -1068,6 +1205,7 @@ def _resume_cell(
         expected_config_digest=_redacted_cell_digest(config),
         expected_artifact_digest=artifact_digest,
         label=label,
+        expected_placement=placement_identity,
     ):
         return False, None
     assert record is not None  # narrowed by _checkpoint_record_reusable
@@ -1130,13 +1268,27 @@ def run_baseline_study(
     # Derive every cell config up front and prove the paired-input invariant
     # before any expensive training or evaluation work begins.
     cells = _canonical_cells(resolved)
-    cell_configs = {
+    placements = _resolve_study_placements(
+        resolved, [seed for seed, _policy in cells]
+    )
+    placement_payload = _placement_study_payload(resolved, placements)
+    base_cell_configs = {
         (seed, policy.id): build_cell_config(
             resolved.base, policy.aggregation, seed
         )
         for seed, policy in cells
     }
-    shared_input_digest = validate_shared_inputs(list(cell_configs.values()))
+    cell_configs = {
+        key: (
+            apply_placement_resolution(config, placements[int(key[0])])
+            if placements
+            else config
+        )
+        for key, config in base_cell_configs.items()
+    }
+    shared_input_digest = validate_shared_inputs(
+        list(base_cell_configs.values()), placement=placement_payload
+    )
 
     try:
         staging, staging_root = _prepare_staging(
@@ -1175,6 +1327,7 @@ def run_baseline_study(
                 seed=seed,
                 config=config,
                 artifact_digest=artifact_digest,
+                resolution=placements.get(int(seed)),
                 match=ablation_match,
             )
             published_cells.append(
@@ -1191,6 +1344,7 @@ def run_baseline_study(
             study=resolved,
             shared_input_digest=shared_input_digest,
             cells=tuple(published_cells),
+            placement=placement_payload,
             match=ablation_match,
         )
         _publish_staging(staging, destination, manifest, MANIFEST_FILENAME)
@@ -1263,6 +1417,7 @@ def _selection_manifest_entry(
     artifact_digest: str | None,
     relative: str,
     reused: bool = False,
+    resolution: PlacementResolution | None = None,
     match: AblationMatchSummary | None = None,
 ) -> dict:
     """One per-cell selection manifest entry.
@@ -1293,6 +1448,8 @@ def _selection_manifest_entry(
         "reused": bool(reused),
         "trace_path": relative,
     }
+    if resolution is not None:
+        entry["placement"] = resolution.identity_payload()
     ablation = ablation_entry_metadata(match, policy.id)
     if ablation is not None:
         entry[ABLATION_METADATA_KEY] = ablation
@@ -1315,6 +1472,7 @@ def _build_selection_manifest(
     selection: SelectionSpec,
     shared_input_digest: str,
     cells: tuple[SelectionCell, ...],
+    placement: Mapping[str, object] | None = None,
     match: AblationMatchSummary | None = None,
 ) -> dict:
     entries = sorted(
@@ -1341,6 +1499,8 @@ def _build_selection_manifest(
         "schedule_ids": sorted({str(entry["schedule_id"]) for entry in entries}),
         "entries": entries,
     }
+    if placement is not None:
+        manifest["placement"] = dict(placement)
     ablation = ablation_manifest_metadata(match)
     if ablation is not None:
         manifest[ABLATION_METADATA_KEY] = ablation
@@ -1415,17 +1575,34 @@ def run_selection_phase(
     # Derive every cell config and one controller/kappa sequence per
     # (seed, schedule) up front, then prove the paired-input invariant before
     # any expensive training or evaluation work begins.
+    placements = _resolve_study_placements(
+        study, [seed for seed, _schedule, _policy in cells]
+    )
+    placement_payload = _placement_study_payload(study, placements)
     cell_configs: dict[tuple[int, str, str], ExperimentConfig] = {}
+    base_cell_configs: dict[tuple[int, str, str], ExperimentConfig] = {}
     controllers: dict[tuple[int, str], AdaptiveAttackController] = {}
     kappa_sequences: dict[tuple[int, str], tuple[float, ...]] = {}
     for seed, schedule, policy in cells:
-        cell_configs[(seed, schedule.id, policy.id)] = build_cell_config(
+        base_config = build_cell_config(
             study.base, policy.aggregation, seed
+        )
+        base_cell_configs[(seed, schedule.id, policy.id)] = base_config
+        resolution = placements.get(int(seed))
+        cell_configs[(seed, schedule.id, policy.id)] = (
+            apply_placement_resolution(base_config, resolution)
+            if resolution is not None
+            else base_config
         )
         key = (seed, schedule.id)
         if key not in controllers:
+            node = (
+                resolution.node
+                if resolution is not None
+                else study.base.attack.compromised_node
+            )
             controller = AdaptiveAttackController.from_episode(
-                compromised_node=study.base.attack.compromised_node,
+                compromised_node=node,
                 schedule=schedule.schedule,
                 total_rounds=study.base.rounds,
                 master_seed=int(seed),
@@ -1434,7 +1611,9 @@ def run_selection_phase(
             kappa_sequences[key] = realized_kappa_sequence(
                 schedule.schedule, study.base.rounds, controller.schedule_seed
             )
-    shared_input_digest = validate_shared_inputs(list(cell_configs.values()))
+    shared_input_digest = validate_shared_inputs(
+        list(base_cell_configs.values()), placement=placement_payload
+    )
 
     checkpoint_directory: Path | None = None
     checkpoint_records: dict[str, dict] = {}
@@ -1444,6 +1623,11 @@ def run_selection_phase(
             "selection_spec_digest": selection_spec_digest(selection),
             "shared_input_digest": shared_input_digest,
         }
+        contract = getattr(study, "placement", None)
+        if contract is not None:
+            expected["placement_contract_digest"] = placement_contract_digest(
+                contract.placement, graph_kind=contract.graph_kind
+            )
         if match is not None:
             expected["ablation_match_digest"] = (
                 match.matched_calibration_input_digest
@@ -1470,6 +1654,7 @@ def run_selection_phase(
                 progress(int(seed), schedule.id, policy.id)
             config = cell_configs[(seed, schedule.id, policy.id)]
             controller = controllers[(seed, schedule.id)]
+            resolution = placements.get(int(seed))
             relative = _selection_relative_trace_path(
                 policy.id, seed, schedule.id
             )
@@ -1494,6 +1679,11 @@ def run_selection_phase(
                 label=label,
                 validator=validator,
                 measure=False,
+                placement_identity=(
+                    resolution.identity_payload()
+                    if resolution is not None
+                    else None
+                ),
             )
             if not reused:
                 _execute_cell_run(
@@ -1523,6 +1713,7 @@ def run_selection_phase(
                     artifact_digest=artifact_digest,
                     relative=relative,
                     reused=reused,
+                    resolution=resolution,
                     match=match,
                 ),
             )
@@ -1536,6 +1727,7 @@ def run_selection_phase(
                 artifact_digest=artifact_digest,
                 relative=relative,
                 reused=reused,
+                resolution=resolution,
                 match=match,
             )
             published_cells.append(
@@ -1558,6 +1750,7 @@ def run_selection_phase(
             selection=selection,
             shared_input_digest=shared_input_digest,
             cells=tuple(published_cells),
+            placement=placement_payload,
             match=match,
         )
         _publish_staging(
@@ -1702,6 +1895,7 @@ def _final_manifest_entry(
     held_out: bool,
     metrics: Mapping[str, object] | None = None,
     reused: bool = False,
+    resolution: PlacementResolution | None = None,
     match: AblationMatchSummary | None = None,
 ) -> dict:
     """One per-cell final manifest entry.
@@ -1726,6 +1920,7 @@ def _final_manifest_entry(
         artifact_digest=artifact_digest,
         relative=relative,
         reused=reused,
+        resolution=resolution,
         match=match,
     )
     entry["held_out"] = bool(held_out)
@@ -1740,6 +1935,7 @@ def _build_final_manifest(
     selection_manifest: Mapping[str, object],
     shared_input_digest: str,
     cells: tuple[SelectionCell, ...],
+    placement: Mapping[str, object] | None = None,
     match: AblationMatchSummary | None = None,
 ) -> dict:
     entries = sorted(
@@ -1783,6 +1979,8 @@ def _build_final_manifest(
         },
         "entries": entries,
     }
+    if placement is not None:
+        manifest["placement"] = dict(placement)
     ablation = ablation_manifest_metadata(match)
     if ablation is not None:
         manifest[ABLATION_METADATA_KEY] = ablation
@@ -1905,17 +2103,34 @@ def run_final_phase(
     # (seed, schedule) up front, then prove the paired-input invariant before
     # any expensive training or evaluation work begins.
     held_out_id = spec.held_out_schedule.id
+    placements = _resolve_study_placements(
+        study, [seed for seed, _schedule, _policy in cells]
+    )
+    placement_payload = _placement_study_payload(study, placements)
     cell_configs: dict[tuple[int, str, str], ExperimentConfig] = {}
+    base_cell_configs: dict[tuple[int, str, str], ExperimentConfig] = {}
     controllers: dict[tuple[int, str], AdaptiveAttackController] = {}
     kappa_sequences: dict[tuple[int, str], tuple[float, ...]] = {}
     for seed, schedule, policy in cells:
-        cell_configs[(seed, schedule.id, policy.id)] = build_cell_config(
+        base_config = build_cell_config(
             study.base, policy.aggregation, seed
+        )
+        base_cell_configs[(seed, schedule.id, policy.id)] = base_config
+        resolution = placements.get(int(seed))
+        cell_configs[(seed, schedule.id, policy.id)] = (
+            apply_placement_resolution(base_config, resolution)
+            if resolution is not None
+            else base_config
         )
         key = (seed, schedule.id)
         if key not in controllers:
+            node = (
+                resolution.node
+                if resolution is not None
+                else study.base.attack.compromised_node
+            )
             controller = AdaptiveAttackController.from_episode(
-                compromised_node=study.base.attack.compromised_node,
+                compromised_node=node,
                 schedule=schedule.schedule,
                 total_rounds=study.base.rounds,
                 master_seed=int(seed),
@@ -1924,7 +2139,9 @@ def run_final_phase(
             kappa_sequences[key] = realized_kappa_sequence(
                 schedule.schedule, study.base.rounds, controller.schedule_seed
             )
-    shared_input_digest = validate_shared_inputs(list(cell_configs.values()))
+    shared_input_digest = validate_shared_inputs(
+        list(base_cell_configs.values()), placement=placement_payload
+    )
 
     expected_selection_digest = selection_spec_digest(selection_projection(spec))
     checkpoint_directory: Path | None = None
@@ -1936,6 +2153,11 @@ def run_final_phase(
             "held_out_study_digest": held_out_study_digest(spec),
             "shared_input_digest": shared_input_digest,
         }
+        contract = getattr(study, "placement", None)
+        if contract is not None:
+            expected["placement_contract_digest"] = placement_contract_digest(
+                contract.placement, graph_kind=contract.graph_kind
+            )
         if match is not None:
             expected["ablation_match_digest"] = (
                 match.matched_calibration_input_digest
@@ -1962,6 +2184,7 @@ def run_final_phase(
                 progress(int(seed), schedule.id, policy.id)
             config = cell_configs[(seed, schedule.id, policy.id)]
             controller = controllers[(seed, schedule.id)]
+            resolution = placements.get(int(seed))
             relative = _selection_relative_trace_path(
                 policy.id, seed, schedule.id
             )
@@ -1986,6 +2209,11 @@ def run_final_phase(
                 label=label,
                 validator=validator,
                 measure=True,
+                placement_identity=(
+                    resolution.identity_payload()
+                    if resolution is not None
+                    else None
+                ),
             )
             if not reused:
                 _execute_cell_run(
@@ -2017,6 +2245,7 @@ def run_final_phase(
                     artifact_digest=artifact_digest,
                     relative=relative,
                     reused=reused,
+                    resolution=resolution,
                     match=match,
                     extra={
                         "held_out_study_digest": held_out_study_digest(spec),
@@ -2038,6 +2267,7 @@ def run_final_phase(
                 held_out=schedule.id == held_out_id,
                 metrics=metrics,
                 reused=reused,
+                resolution=resolution,
                 match=match,
             )
             published_cells.append(
@@ -2061,6 +2291,7 @@ def run_final_phase(
             selection_manifest=selection_manifest,
             shared_input_digest=shared_input_digest,
             cells=tuple(published_cells),
+            placement=placement_payload,
             match=match,
         )
         _publish_staging(

@@ -93,6 +93,7 @@ __all__ = [
     "HeldOutStudyConfigError",
     "NamedSchedule",
     "PanelPolicy",
+    "PlacementContract",
     "SelectionSpec",
     "TuningProvenance",
     "held_out_study_digest",
@@ -561,6 +562,23 @@ class AblationStudyContract(_StrictStudyModel):
         raise KeyError(variant)
 
 
+class PlacementContract(_StrictStudyModel):
+    """Optional seed-derived degree-placement contract for a study (R020/D040).
+
+    When present, the compromised node is **not** a prechosen scalar: the
+    per-cell node is resolved by the named degree rank (``low``/``mid``/
+    ``high``) on the realized, seed-derived topology. ``graph_kind`` pins the
+    topology family the contract is valid for; the study base must declare that
+    same kind. ``require_varied_degrees`` (default true) makes a regular
+    realized graph fail closed, because its three canonical ranks could never
+    represent three distinct degree groups.
+    """
+
+    placement: Literal["low", "mid", "high"]
+    graph_kind: Literal["watts_strogatz"] = "watts_strogatz"
+    require_varied_degrees: bool = True
+
+
 class BaselineStudyConfig(_StrictStudyModel):
     """Top-level strict baseline-study envelope (R017/S01).
 
@@ -583,6 +601,12 @@ class BaselineStudyConfig(_StrictStudyModel):
     serializer omits an absent contract rather than emitting a null key). When
     present the panel must be exactly the eight identities and the three
     artifact-backed entries must reference distinct, digest-pinned artifacts.
+
+    ``placement`` is the optional seed-derived degree-placement contract (R020).
+    When present the base topology must match its ``graph_kind`` and the base
+    attack's scalar ``compromised_node`` is a schema placeholder that the
+    contract deterministically overrides per cell; the serializer omits an
+    absent contract so legacy canonical bytes are stable.
     """
 
     study_id: str = Field(min_length=1, max_length=MAX_STUDY_ID_LEN)
@@ -594,6 +618,7 @@ class BaselineStudyConfig(_StrictStudyModel):
     selection_provenance: str = Field(min_length=1, max_length=MAX_LABEL_LEN)
     panel: Annotated[tuple[PanelPolicy, ...], BeforeValidator(_as_tuple)]
     ablations: AblationStudyContract | None = None
+    placement: PlacementContract | None = None
 
     @field_validator("study_id")
     @classmethod
@@ -609,17 +634,26 @@ class BaselineStudyConfig(_StrictStudyModel):
         return value
 
     @model_serializer(mode="wrap")
-    def _omit_absent_ablations(self, handler, info):
-        """Serialize without a null ``ablations`` key (legacy canonical form)."""
+    def _omit_absent_opt_ins(self, handler, info):
+        """Serialize without absent opt-in keys (legacy canonical form)."""
 
         data = handler(self)
         if self.ablations is None:
             data.pop("ablations", None)
+        if self.placement is None:
+            data.pop("placement", None)
         return data
 
     @model_validator(mode="after")
     def _validate_study(self) -> "BaselineStudyConfig":
         _validate_study_content(self)
+        if self.placement is not None:
+            if self.base.topology.kind != self.placement.graph_kind:
+                raise ValueError(
+                    "placement contract graph_kind "
+                    f"{self.placement.graph_kind!r} does not match the base "
+                    f"topology kind {self.base.topology.kind!r}"
+                )
         return self
 
     # -- deterministic ordering helpers ------------------------------------ #
@@ -744,10 +778,11 @@ class HeldOutStudyConfig(_StrictStudyModel):
             )
 
         attack = self.study.base.attack
-        if attack.compromised_node is None:
+        if attack.compromised_node is None and self.study.placement is None:
             raise ValueError(
                 "study.base.attack.compromised_node must be set for an "
-                "adaptive held-out study"
+                "adaptive held-out study (or a placement contract must "
+                "derive it)"
             )
 
         rounds = self.study.base.rounds
