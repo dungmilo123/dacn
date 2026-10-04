@@ -184,6 +184,9 @@ from .evaluation_config import (
     study_identity_payload,
 )
 from .evaluation import (
+    CHECKPOINT_FILENAME,
+    CHECKPOINT_SCHEMA,
+    CHECKPOINT_SCHEMA_VERSION,
     FINAL_MANIFEST_FILENAME,
     FINAL_MANIFEST_SCHEMA,
     FINAL_MANIFEST_SCHEMA_VERSION,
@@ -720,6 +723,9 @@ __all__ = [
     "study_identity_payload",
     "MANIFEST_SCHEMA",
     "MANIFEST_SCHEMA_VERSION",
+    "CHECKPOINT_FILENAME",
+    "CHECKPOINT_SCHEMA",
+    "CHECKPOINT_SCHEMA_VERSION",
     "FINAL_MANIFEST_FILENAME",
     "FINAL_MANIFEST_SCHEMA",
     "FINAL_MANIFEST_SCHEMA_VERSION",

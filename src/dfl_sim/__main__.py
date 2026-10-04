@@ -290,6 +290,17 @@ def build_evaluate_parser() -> argparse.ArgumentParser:
             "study root."
         ),
     )
+    parser.add_argument(
+        "--resume-from",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Resume a held-out study from a prior study root or retained "
+            "staging directory. Manifest-matched completed cells are reused "
+            "after their traces are revalidated; only missing or mismatched "
+            "cells are recomputed. A digest mismatch fails closed."
+        ),
+    )
     return parser
 
 
@@ -502,7 +513,10 @@ def _held_out_success_marker(
 
 
 def _run_held_out_evaluate(
-    spec: HeldOutStudyConfig, output: str, selection_output: str | None
+    spec: HeldOutStudyConfig,
+    output: str,
+    selection_output: str | None,
+    resume_from: str | None = None,
 ) -> int:
     """Run the held-out study (full two-phase, or final-only with a freeze)."""
 
@@ -517,6 +531,7 @@ def _run_held_out_evaluate(
                 progress=lambda seed, schedule_id, policy_id: _held_out_progress(
                     "final", seed, schedule_id, policy_id
                 ),
+                resume_from=resume_from,
             )
         except _EVALUATE_ERRORS as exc:
             print(f"dfl_sim: error: {exc}", file=sys.stderr)
@@ -541,7 +556,7 @@ def _run_held_out_evaluate(
 
     try:
         study_result = run_held_out_study(
-            spec, output, progress=_held_out_progress
+            spec, output, progress=_held_out_progress, resume_from=resume_from
         )
     except _EVALUATE_ERRORS as exc:
         print(f"dfl_sim: error: {exc}", file=sys.stderr)
@@ -560,7 +575,10 @@ def _run_held_out_evaluate(
 
 
 def _run_evaluate(
-    study_path: str, output: str, selection_output: str | None = None
+    study_path: str,
+    output: str,
+    selection_output: str | None = None,
+    resume_from: str | None = None,
 ) -> int:
     """Dispatch ``dfl evaluate`` to the baseline or held-out study contract."""
 
@@ -571,13 +589,23 @@ def _run_evaluate(
         return 1
 
     if isinstance(spec, HeldOutStudyConfig):
-        return _run_held_out_evaluate(spec, output, selection_output)
+        return _run_held_out_evaluate(
+            spec, output, selection_output, resume_from
+        )
 
     if selection_output is not None:
         print(
             "dfl_sim: error: --selection-output is only valid for a "
             "held-out study spec; a baseline study runs selection and final "
             "in one command",
+            file=sys.stderr,
+        )
+        return 1
+
+    if resume_from is not None:
+        print(
+            "dfl_sim: error: --resume-from is only valid for a held-out "
+            "study spec",
             file=sys.stderr,
         )
         return 1
@@ -646,6 +674,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             evaluate_args.study,
             evaluate_args.output,
             evaluate_args.selection_output,
+            evaluate_args.resume_from,
         )
 
     if args_list and args_list[0] == "view":

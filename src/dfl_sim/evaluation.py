@@ -85,6 +85,9 @@ __all__ = [
     "ROBUSTNESS_SUMMARY_FILENAME",
     "ROBUSTNESS_SUMMARY_SCHEMA",
     "ROBUSTNESS_SUMMARY_SCHEMA_VERSION",
+    "CHECKPOINT_FILENAME",
+    "CHECKPOINT_SCHEMA",
+    "CHECKPOINT_SCHEMA_VERSION",
     "SELECTION_MANIFEST_FILENAME",
     "SELECTION_MANIFEST_SCHEMA",
     "SELECTION_MANIFEST_SCHEMA_VERSION",
@@ -157,6 +160,16 @@ _FINAL_STAGING_PREFIX = ".final.staging-"
 
 #: Private staging prefix for the whole two-phase held-out study root.
 _HELD_OUT_STAGING_PREFIX = ".held_out_study.staging-"
+
+#: Per-cell resume checkpoint file written into each phase staging directory.
+#: Canonical JSON Lines: one completed ``(seed, schedule, policy)`` cell per
+#: line carrying its relative trace path and the schedule/config/artifact/study
+#: digests needed to prove a reused trace belongs to this exact study. Because
+#: a successful phase renames staging into place, a published output (or a
+#: retained private staging directory) is itself a valid resume checkpoint.
+CHECKPOINT_FILENAME = "cells.jsonl"
+CHECKPOINT_SCHEMA = "dfl_held_out_checkpoint"
+CHECKPOINT_SCHEMA_VERSION = 1
 
 #: Canonical panel ordering used for deterministic manifest entry order.
 _POLICY_ORDER: dict[str, int] = {
@@ -713,6 +726,313 @@ def _publish_staging(
     _fsync_dir(destination.parent)
 
 
+# --------------------------------------------------------------------------- #
+# Bounded manifest-matched resume (M003/S02/T07)
+# --------------------------------------------------------------------------- #
+def _checkpoint_pairing_key(policy_id: str, seed: int, schedule_id: str) -> str:
+    return f"{policy_id}:seed-{int(seed)}:{schedule_id}"
+
+
+def _locate_checkpoint(
+    resume_from: str | os.PathLike[str], *, phase: str
+) -> tuple[Path, Path]:
+    """Locate the checkpoint file for ``phase`` under ``resume_from``.
+
+    Accepts either a study root (``<root>/selection`` or ``<root>/final``) or a
+    flat phase output directory holding ``cells.jsonl`` directly.
+    """
+
+    base = Path(os.path.abspath(os.fspath(resume_from)))
+    subdir = "selection" if phase == "selection" else "final"
+    for candidate in (
+        base / subdir / CHECKPOINT_FILENAME,
+        base / CHECKPOINT_FILENAME,
+    ):
+        if candidate.is_file():
+            return candidate.parent, candidate
+    raise EvaluationError(
+        f"resume checkpoint not found under {base}: expected "
+        f"{subdir}/{CHECKPOINT_FILENAME} or {CHECKPOINT_FILENAME}"
+    )
+
+
+def _load_resume_checkpoint(
+    resume_from: str | os.PathLike[str],
+    *,
+    phase: str,
+    expected: Mapping[str, object],
+) -> tuple[Path, dict[str, dict]]:
+    """Read and validate a prior per-cell checkpoint; never trust it blindly.
+
+    Every line must declare the checkpoint schema/version and the requested
+    phase, and every study-level digest in ``expected`` must match exactly. A
+    mismatch abandons reuse and fails closed naming only the bounded digests,
+    so a checkpoint from another study/split/spec can never be mixed in.
+    """
+
+    directory, path = _locate_checkpoint(resume_from, phase=phase)
+    records: dict[str, dict] = {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for lineno, line in enumerate(handle, start=1):
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    record = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise EvaluationError(
+                        f"resume checkpoint {path} line {lineno} is not "
+                        "valid JSON"
+                    ) from exc
+                if not isinstance(record, dict):
+                    raise EvaluationError(
+                        f"resume checkpoint {path} line {lineno} is not an "
+                        "object"
+                    )
+                if (
+                    record.get("schema") != CHECKPOINT_SCHEMA
+                    or record.get("schema_version")
+                    != CHECKPOINT_SCHEMA_VERSION
+                ):
+                    raise EvaluationError(
+                        f"resume checkpoint {path} line {lineno} has an "
+                        "unrecognized schema"
+                    )
+                if record.get("phase") != phase:
+                    raise EvaluationError(
+                        f"resume checkpoint {path} line {lineno} is a "
+                        f"{record.get('phase')!r} checkpoint, expected "
+                        f"{phase!r}"
+                    )
+                for key, value in expected.items():
+                    observed = record.get(key)
+                    if observed != value:
+                        raise EvaluationError(
+                            f"resume checkpoint {key} mismatch: checkpoint "
+                            f"{observed} does not match current {value}"
+                        )
+                pairing_key = str(record.get("pairing_key"))
+                if pairing_key in records:
+                    raise EvaluationError(
+                        f"resume checkpoint {path} repeats cell "
+                        f"{pairing_key!r}"
+                    )
+                records[pairing_key] = record
+    except OSError as exc:
+        raise EvaluationError(
+            f"could not read resume checkpoint {path}: {exc}"
+        ) from exc
+    return directory, records
+
+
+def _open_checkpoint(path: Path):
+    try:
+        return open(path, "wb")
+    except OSError as exc:
+        raise EvaluationError(
+            f"could not create resume checkpoint {path}: {exc}"
+        ) from exc
+
+
+def _append_checkpoint(handle, record: Mapping[str, object]) -> None:
+    try:
+        handle.write(_canonical_bytes(record) + b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    except OSError as exc:
+        raise EvaluationError(
+            f"could not write resume checkpoint: {exc}"
+        ) from exc
+
+
+def _checkpoint_record(
+    *,
+    phase: str,
+    study: BaselineStudyConfig,
+    selection_digest: str,
+    shared_input_digest: str,
+    policy: PanelPolicy,
+    seed: int,
+    schedule: NamedSchedule,
+    config: ExperimentConfig,
+    artifact_digest: str | None,
+    relative: str,
+    reused: bool,
+    extra: Mapping[str, object] | None = None,
+) -> dict:
+    """One canonical per-cell checkpoint line."""
+
+    record: dict = {
+        "schema": CHECKPOINT_SCHEMA,
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "phase": phase,
+        "pairing_key": _checkpoint_pairing_key(policy.id, seed, schedule.id),
+        "seed": int(seed),
+        "policy_id": policy.id,
+        "schedule_id": schedule.id,
+        "trace_path": relative,
+        "status": "complete",
+        "schedule_digest": schedule_digest(schedule.schedule),
+        "config_digest": _redacted_cell_digest(config),
+        "artifact_digest": artifact_digest,
+        "study_digest": study_digest(study),
+        "selection_spec_digest": selection_digest,
+        "shared_input_digest": shared_input_digest,
+        "reused": bool(reused),
+    }
+    if extra is not None:
+        record.update(extra)
+    return record
+
+
+def _checkpoint_record_reusable(
+    *,
+    record: Mapping[str, object] | None,
+    expected_schedule_digest: str,
+    expected_config_digest: str,
+    expected_artifact_digest: str | None,
+    label: str,
+) -> bool:
+    """Decide whether a checkpoint cell may be reused, or fail closed.
+
+    A schedule or artifact digest mismatch means the checkpoint's evidence is
+    not from this exact study, so it fails closed rather than mixing evidence.
+    A missing record or a redacted-config mismatch simply means the cell is
+    recomputed from scratch.
+    """
+
+    if record is None:
+        return False
+    observed_schedule = record.get("schedule_digest")
+    if observed_schedule != expected_schedule_digest:
+        raise EvaluationError(
+            f"{label} resume schedule_digest mismatch: checkpoint "
+            f"{observed_schedule} does not match current "
+            f"{expected_schedule_digest}"
+        )
+    observed_artifact = record.get("artifact_digest")
+    if observed_artifact != expected_artifact_digest:
+        raise EvaluationError(
+            f"{label} resume artifact_digest mismatch: checkpoint "
+            f"{observed_artifact} does not match current "
+            f"{expected_artifact_digest}"
+        )
+    if record.get("config_digest") != expected_config_digest:
+        return False
+    if record.get("status") != "complete":
+        return False
+    return True
+
+
+def _checkpoint_trace_source(
+    directory: Path, record: Mapping[str, object], *, label: str
+) -> Path | None:
+    """Resolve a recorded relative trace path under the checkpoint root."""
+
+    relative = record.get("trace_path")
+    if not isinstance(relative, str) or not relative:
+        return None
+    if os.path.isabs(relative):
+        raise EvaluationError(f"{label} resume trace_path must be relative")
+    source = directory / relative
+    try:
+        resolved = source.resolve()
+        root = directory.resolve()
+    except OSError as exc:
+        raise EvaluationError(
+            f"{label} resume trace path is unresolvable: {exc}"
+        ) from exc
+    if not resolved.is_relative_to(root):
+        raise EvaluationError(
+            f"{label} resume trace_path escapes the checkpoint directory"
+        )
+    if not resolved.is_dir():
+        return None
+    return resolved
+
+
+def _copy_checkpoint_trace(
+    source: Path, trace_dir: Path, *, staging_root: Path, label: str
+) -> None:
+    """Copy one reused trace into staging at its canonical relative path."""
+
+    trace_dir.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        resolved = trace_dir.resolve()
+    except OSError as exc:  # pragma: no cover - defensive
+        raise EvaluationError(
+            f"could not resolve trace destination for {label}: {exc}"
+        ) from exc
+    if not resolved.is_relative_to(staging_root):
+        raise EvaluationError(
+            f"trace destination for {label} escapes the staging root"
+        )
+    try:
+        shutil.copytree(source, trace_dir)
+    except OSError as exc:
+        raise EvaluationError(
+            f"could not reuse checkpoint trace for {label}: {exc}"
+        ) from exc
+
+
+def _resume_cell(
+    *,
+    checkpoint_directory: Path | None,
+    checkpoint_records: Mapping[str, Mapping[str, object]],
+    policy: PanelPolicy,
+    seed: int,
+    schedule: NamedSchedule,
+    config: ExperimentConfig,
+    artifact_digest: str | None,
+    relative: str,
+    trace_dir: Path,
+    staging_root: Path,
+    label: str,
+    validator: TraceValidator,
+    measure: bool,
+) -> tuple[bool, dict | None]:
+    """Try to reuse a manifest-matched checkpoint cell.
+
+    Returns ``(reused, metrics)``. A digest-mismatched or unreadable reuse
+    candidate is either rejected up front (schedule/artifact mismatch fails
+    closed) or silently recomputed (missing trace, unreadable trace, or a
+    redacted-config mismatch), so stale evidence is never mixed into a
+    published study.
+    """
+
+    if checkpoint_directory is None:
+        return False, None
+    record = checkpoint_records.get(
+        _checkpoint_pairing_key(policy.id, seed, schedule.id)
+    )
+    if not _checkpoint_record_reusable(
+        record=record,
+        expected_schedule_digest=schedule_digest(schedule.schedule),
+        expected_config_digest=_redacted_cell_digest(config),
+        expected_artifact_digest=artifact_digest,
+        label=label,
+    ):
+        return False, None
+    assert record is not None  # narrowed by _checkpoint_record_reusable
+    source = _checkpoint_trace_source(
+        checkpoint_directory, record, label=label
+    )
+    if source is None:
+        return False, None
+    try:
+        _copy_checkpoint_trace(
+            source, trace_dir, staging_root=staging_root, label=label
+        )
+        metrics = _validate_cell_trace(
+            validator, trace_dir, label=label, measure=measure
+        )
+    except EvaluationError:
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        return False, None
+    return True, metrics
+
+
 def run_baseline_study(
     study: StudyInput,
     output: str | os.PathLike[str],
@@ -882,12 +1202,15 @@ def _selection_manifest_entry(
     controller: AdaptiveAttackController,
     artifact_digest: str | None,
     relative: str,
+    reused: bool = False,
 ) -> dict:
     """One per-cell selection manifest entry.
 
     ``realized_kappa_sequence`` is recomputed from the controller's own schedule
     seed, so the recorded per-round attack is exactly what every policy in the
-    cell realized through the :class:`OutgoingController` seam.
+    cell realized through the :class:`OutgoingController` seam. ``reused`` is
+    ``True`` only when the cell's trace came from a manifest-matched resume
+    checkpoint instead of being recomputed in this run.
     """
 
     return {
@@ -906,6 +1229,7 @@ def _selection_manifest_entry(
         "config_digest": _redacted_cell_digest(config),
         "artifact_digest": artifact_digest,
         "status": "complete",
+        "reused": bool(reused),
         "trace_path": relative,
     }
 
@@ -965,6 +1289,7 @@ def run_selection_phase(
     evaluation_dataset_loader: DatasetLoader | None = None,
     progress: SelectionProgressHook | None = None,
     trace_validator: TraceValidator | None = None,
+    resume_from: str | os.PathLike[str] | None = None,
 ) -> SelectionResult:
     """Run the selection panel over known schedules and freeze the output.
 
@@ -981,6 +1306,14 @@ def run_selection_phase(
     private same-parent staging directory is validated with
     :class:`~dfl_sim.trajectory.TraceReader` and atomically renamed into place
     only after every cell succeeds; any failure publishes nothing.
+
+    When ``resume_from`` names a prior selection checkpoint directory (a
+    published selection output or a retained private staging directory), every
+    recorded cell whose study/schedule/config/artifact digests match is reused
+    from that checkpoint after its trace is revalidated with
+    :class:`~dfl_sim.trajectory.TraceReader`; only missing or mismatched cells
+    are recomputed. A study-level digest mismatch abandons reuse and fails
+    closed, so stale or foreign evidence is never mixed into this run.
 
     ``progress`` receives ``(seed, schedule_id, policy_id)`` before each cell
     runs so callers can emit bounded per-cell progress markers.
@@ -1032,12 +1365,27 @@ def run_selection_phase(
             )
     shared_input_digest = validate_shared_inputs(list(cell_configs.values()))
 
+    checkpoint_directory: Path | None = None
+    checkpoint_records: dict[str, dict] = {}
+    if resume_from is not None:
+        checkpoint_directory, checkpoint_records = _load_resume_checkpoint(
+            resume_from,
+            phase="selection",
+            expected={
+                "study_digest": study_digest(study),
+                "selection_spec_digest": selection_spec_digest(selection),
+                "shared_input_digest": shared_input_digest,
+            },
+        )
+
     staging: Path | None = None
     published = False
+    checkpoint_handle = None
     try:
         staging, staging_root = _prepare_staging(
             destination, prefix=_SELECTION_STAGING_PREFIX
         )
+        checkpoint_handle = _open_checkpoint(staging / CHECKPOINT_FILENAME)
         artifact_cache: dict[str, str] = {}
         published_cells: list[SelectionCell] = []
         for seed, schedule, policy in cells:
@@ -1052,21 +1400,53 @@ def run_selection_phase(
             label = (
                 f"policy {policy.id!r} seed {seed} schedule {schedule.id!r}"
             )
-            _execute_cell_run(
-                config,
-                trace_dir,
-                staging_root=staging_root,
-                label=label,
-                dataset=dataset,
-                dataset_loader=dataset_loader,
-                evaluation_dataset=evaluation_dataset,
-                evaluation_dataset_loader=evaluation_dataset_loader,
-                controller=controller,
-            )
-            _validate_cell_trace(validator, trace_dir, label=label)
-
             artifact_digest = _artifact_digest(
                 policy.aggregation, artifact_cache
+            )
+            reused, _metrics = _resume_cell(
+                checkpoint_directory=checkpoint_directory,
+                checkpoint_records=checkpoint_records,
+                policy=policy,
+                seed=seed,
+                schedule=schedule,
+                config=config,
+                artifact_digest=artifact_digest,
+                relative=relative,
+                trace_dir=trace_dir,
+                staging_root=staging_root,
+                label=label,
+                validator=validator,
+                measure=False,
+            )
+            if not reused:
+                _execute_cell_run(
+                    config,
+                    trace_dir,
+                    staging_root=staging_root,
+                    label=label,
+                    dataset=dataset,
+                    dataset_loader=dataset_loader,
+                    evaluation_dataset=evaluation_dataset,
+                    evaluation_dataset_loader=evaluation_dataset_loader,
+                    controller=controller,
+                )
+                _validate_cell_trace(validator, trace_dir, label=label)
+
+            _append_checkpoint(
+                checkpoint_handle,
+                _checkpoint_record(
+                    phase="selection",
+                    study=study,
+                    selection_digest=selection_spec_digest(selection),
+                    shared_input_digest=shared_input_digest,
+                    policy=policy,
+                    seed=seed,
+                    schedule=schedule,
+                    config=config,
+                    artifact_digest=artifact_digest,
+                    relative=relative,
+                    reused=reused,
+                ),
             )
             entry = _selection_manifest_entry(
                 study=study,
@@ -1077,6 +1457,7 @@ def run_selection_phase(
                 controller=controller,
                 artifact_digest=artifact_digest,
                 relative=relative,
+                reused=reused,
             )
             published_cells.append(
                 SelectionCell(
@@ -1092,6 +1473,8 @@ def run_selection_phase(
                 )
             )
 
+        checkpoint_handle.close()
+        checkpoint_handle = None
         manifest = _build_selection_manifest(
             selection=selection,
             shared_input_digest=shared_input_digest,
@@ -1102,6 +1485,11 @@ def run_selection_phase(
         )
         published = True
     finally:
+        if checkpoint_handle is not None:
+            try:
+                checkpoint_handle.close()
+            except OSError:  # pragma: no cover - best-effort cleanup
+                pass
         if not published and staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
 
@@ -1231,6 +1619,7 @@ def _final_manifest_entry(
     relative: str,
     held_out: bool,
     metrics: Mapping[str, object] | None = None,
+    reused: bool = False,
 ) -> dict:
     """One per-cell final manifest entry.
 
@@ -1240,7 +1629,8 @@ def _final_manifest_entry(
     has been measured, a compact ``metrics`` block (final mean accuracy,
     worst-node accuracy, mean loss, node count) is embedded so downstream
     report compilation can read paired per-cell metrics without reopening every
-    trace.
+    trace. ``reused`` records that the trace came from a manifest-matched
+    resume checkpoint rather than this run.
     """
 
     entry = _selection_manifest_entry(
@@ -1252,6 +1642,7 @@ def _final_manifest_entry(
         controller=controller,
         artifact_digest=artifact_digest,
         relative=relative,
+        reused=reused,
     )
     entry["held_out"] = bool(held_out)
     if metrics is not None:
@@ -1322,6 +1713,7 @@ def run_final_phase(
     evaluation_dataset_loader: DatasetLoader | None = None,
     progress: SelectionProgressHook | None = None,
     trace_validator: TraceValidator | None = None,
+    resume_from: str | os.PathLike[str] | None = None,
 ) -> FinalResult:
     """Run held-out final seeds over known plus reserved schedules.
 
@@ -1340,6 +1732,16 @@ def run_final_phase(
     validated with :class:`~dfl_sim.trajectory.TraceReader` and published
     atomically into ``output/final-manifest.json`` only after every cell
     succeeds; any failure publishes nothing.
+
+    When ``resume_from`` names a prior final checkpoint directory (a published
+    final output or a retained private staging directory), a recorded cell is
+    reused only when the frozen selection-side digest, the current
+    study/full digest, and the per-cell schedule/config/artifact digests all
+    match; its trace is revalidated with
+    :class:`~dfl_sim.trajectory.TraceReader` before being copied into staging.
+    A global or schedule/artifact digest mismatch abandons reuse and fails
+    closed, so stale or foreign evidence is never mixed into a published
+    study.
 
     ``progress`` receives ``(seed, schedule_id, policy_id)`` before each cell
     runs so callers can emit bounded per-cell progress markers.
@@ -1434,13 +1836,30 @@ def run_final_phase(
             )
     shared_input_digest = validate_shared_inputs(list(cell_configs.values()))
 
+    expected_selection_digest = selection_spec_digest(selection_projection(spec))
+    checkpoint_directory: Path | None = None
+    checkpoint_records: dict[str, dict] = {}
+    if resume_from is not None:
+        checkpoint_directory, checkpoint_records = _load_resume_checkpoint(
+            resume_from,
+            phase="final",
+            expected={
+                "study_digest": expected_study_digest,
+                "selection_spec_digest": expected_selection_digest,
+                "held_out_study_digest": held_out_study_digest(spec),
+                "shared_input_digest": shared_input_digest,
+            },
+        )
+
     staging: Path | None = None
     published = False
     published_cells: list[SelectionCell] = []
+    checkpoint_handle = None
     try:
         staging, staging_root = _prepare_staging(
             destination, prefix=_FINAL_STAGING_PREFIX
         )
+        checkpoint_handle = _open_checkpoint(staging / CHECKPOINT_FILENAME)
         artifact_cache: dict[str, str] = {}
         for seed, schedule, policy in cells:
             if progress is not None:
@@ -1454,23 +1873,61 @@ def run_final_phase(
             label = (
                 f"policy {policy.id!r} seed {seed} schedule {schedule.id!r}"
             )
-            _execute_cell_run(
-                config,
-                trace_dir,
-                staging_root=staging_root,
-                label=label,
-                dataset=dataset,
-                dataset_loader=dataset_loader,
-                evaluation_dataset=evaluation_dataset,
-                evaluation_dataset_loader=evaluation_dataset_loader,
-                controller=controller,
-            )
-            metrics = _validate_cell_trace(
-                validator, trace_dir, label=label, measure=True
-            )
-
             artifact_digest = _artifact_digest(
                 policy.aggregation, artifact_cache
+            )
+            reused, metrics = _resume_cell(
+                checkpoint_directory=checkpoint_directory,
+                checkpoint_records=checkpoint_records,
+                policy=policy,
+                seed=seed,
+                schedule=schedule,
+                config=config,
+                artifact_digest=artifact_digest,
+                relative=relative,
+                trace_dir=trace_dir,
+                staging_root=staging_root,
+                label=label,
+                validator=validator,
+                measure=True,
+            )
+            if not reused:
+                _execute_cell_run(
+                    config,
+                    trace_dir,
+                    staging_root=staging_root,
+                    label=label,
+                    dataset=dataset,
+                    dataset_loader=dataset_loader,
+                    evaluation_dataset=evaluation_dataset,
+                    evaluation_dataset_loader=evaluation_dataset_loader,
+                    controller=controller,
+                )
+                metrics = _validate_cell_trace(
+                    validator, trace_dir, label=label, measure=True
+                )
+
+            _append_checkpoint(
+                checkpoint_handle,
+                _checkpoint_record(
+                    phase="final",
+                    study=study,
+                    selection_digest=expected_selection_digest,
+                    shared_input_digest=shared_input_digest,
+                    policy=policy,
+                    seed=seed,
+                    schedule=schedule,
+                    config=config,
+                    artifact_digest=artifact_digest,
+                    relative=relative,
+                    reused=reused,
+                    extra={
+                        "held_out_study_digest": held_out_study_digest(spec),
+                        "selection_output_digest": selection_manifest.get(
+                            "selection_output_digest"
+                        ),
+                    },
+                ),
             )
             entry = _final_manifest_entry(
                 study=study,
@@ -1483,6 +1940,7 @@ def run_final_phase(
                 relative=relative,
                 held_out=schedule.id == held_out_id,
                 metrics=metrics,
+                reused=reused,
             )
             published_cells.append(
                 SelectionCell(
@@ -1498,6 +1956,8 @@ def run_final_phase(
                 )
             )
 
+        checkpoint_handle.close()
+        checkpoint_handle = None
         manifest = _build_final_manifest(
             spec=spec,
             selection_manifest=selection_manifest,
@@ -1509,6 +1969,11 @@ def run_final_phase(
         )
         published = True
     finally:
+        if checkpoint_handle is not None:
+            try:
+                checkpoint_handle.close()
+            except OSError:  # pragma: no cover - best-effort cleanup
+                pass
         if not published and staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
 
@@ -1615,6 +2080,7 @@ def run_held_out_study(
     evaluation_dataset_loader: DatasetLoader | None = None,
     progress: HeldOutProgressHook | None = None,
     trace_validator: TraceValidator | None = None,
+    resume_from: str | os.PathLike[str] | None = None,
 ) -> HeldOutStudyResult:
     """Run the full selection -> freeze -> final held-out study in one call.
 
@@ -1624,12 +2090,19 @@ def run_held_out_study(
     ``staging/final``, and finally the whole staging directory is atomically
     renamed into ``output``. The published study root therefore holds
     ``selection/selection-manifest.json`` and ``final/final-manifest.json``
-    plus their traces.
+    plus their traces and a per-cell ``cells.jsonl`` checkpoint per phase.
 
     This is the only entry point that runs both phases; the phase runners
     themselves never see the final seeds during selection (the selection runner
     accepts only a :class:`SelectionSpec`), and the final runner re-asserts the
     split and the frozen selection digest before running.
+
+    When ``resume_from`` names a prior study root or retained staging root, a
+    matching ``selection/cells.jsonl`` resumes the selection phase and a
+    matching ``final/cells.jsonl`` (or a flat ``cells.jsonl``) resumes the final
+    phase; manifest-matched completed cells are reused and only missing or
+    mismatched cells are recomputed. A study-level digest mismatch fails
+    closed, so an interrupted study is never continued from stale evidence.
 
     ``progress`` receives ``(phase, seed, schedule_id, policy_id)`` before each
     cell runs, where ``phase`` is ``"selection"`` or ``"final"``. Any failure
@@ -1653,6 +2126,23 @@ def run_held_out_study(
     )
     validator = TraceReader if trace_validator is None else trace_validator
 
+    selection_resume: Path | None = None
+    final_resume: Path | None = None
+    if resume_from is not None:
+        base = Path(os.path.abspath(os.fspath(resume_from)))
+        if (base / "selection" / CHECKPOINT_FILENAME).is_file():
+            selection_resume = base / "selection"
+        if (base / "final" / CHECKPOINT_FILENAME).is_file():
+            final_resume = base / "final"
+        elif (base / CHECKPOINT_FILENAME).is_file():
+            final_resume = base
+        if selection_resume is None and final_resume is None:
+            raise EvaluationError(
+                f"resume checkpoint not found under {base}: expected "
+                f"selection/{CHECKPOINT_FILENAME} or final/"
+                f"{CHECKPOINT_FILENAME}"
+            )
+
     staging: Path | None = None
     published = False
     try:
@@ -1669,6 +2159,7 @@ def run_held_out_study(
             evaluation_dataset_loader=evaluation_dataset_loader,
             progress=_phase_progress(progress, "selection"),
             trace_validator=validator,
+            resume_from=selection_resume,
         )
         # Durably commit the frozen selection output before the final phase
         # reads it back from disk.
@@ -1685,6 +2176,7 @@ def run_held_out_study(
             evaluation_dataset_loader=evaluation_dataset_loader,
             progress=_phase_progress(progress, "final"),
             trace_validator=validator,
+            resume_from=final_resume,
         )
         _fsync_dir(final_output)
         # Build the paired per-cell metrics summary from the just-written final
