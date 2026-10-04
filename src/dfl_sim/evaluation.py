@@ -89,6 +89,17 @@ from .study_placement import (
     resolve_placement,
 )
 from .trajectory import SCHEMA_VERSION, TraceReader, TrajectoryError
+from .costs import (
+    COST_SIDECAR_FILENAME,
+    DECISION_AUDIT_SIDECAR_FILENAME,
+    MEASUREMENT_CLOCK,
+    CellTelemetry,
+    CostError,
+    file_digest,
+    load_cost_payload,
+    load_decision_audit_records,
+    trace_artifact_digest,
+)
 
 __all__ = [
     "MANIFEST_FILENAME",
@@ -136,6 +147,10 @@ MANIFEST_FILENAME = "baseline-manifest.json"
 
 #: Subdirectory holding one trace per (policy, seed) cell.
 TRACES_DIRNAME = "traces"
+
+#: Subdirectory holding opt-in scalar cost/decision sidecars per cell. Sidecars
+#: live next to (never inside) the strictly validated schema-v1 trace directory.
+TELEMETRY_DIRNAME = "telemetry"
 
 #: Versioned manifest identity.
 MANIFEST_SCHEMA = "dfl_baseline_study_manifest"
@@ -329,6 +344,232 @@ class HeldOutStudyResult:
         """The final manifest path."""
 
         return self.final_result.manifest_path
+
+
+@dataclass(frozen=True, slots=True)
+class CellTraceValidation:
+    """Result of validating one committed trace.
+
+    ``trace_digest`` is the canonical digest of the TraceReader-validated
+    manifest (``None`` when telemetry did not request it); ``metrics`` is the
+    reduced final-round metrics block (``None`` unless requested).
+    """
+
+    trace_digest: str | None
+    metrics: dict | None
+
+
+# --------------------------------------------------------------------------- #
+# Opt-in cost/decision telemetry wiring (R023/D041)
+# --------------------------------------------------------------------------- #
+def _baseline_telemetry_relative(policy_id: str, seed: int) -> str:
+    return f"{TELEMETRY_DIRNAME}/{policy_id}/seed-{int(seed)}"
+
+
+def _selection_telemetry_relative(
+    policy_id: str, seed: int, schedule_id: str
+) -> str:
+    return (
+        f"{TELEMETRY_DIRNAME}/{schedule_id}/{policy_id}/seed-{int(seed)}"
+    )
+
+
+def _telemetry_identity(
+    *,
+    phase: str,
+    study_id: str,
+    policy_id: str,
+    seed: int,
+    schedule_id: str | None = None,
+    condition_id: str | None = None,
+) -> dict:
+    identity: dict = {
+        "phase": phase,
+        "study_id": study_id,
+        "policy_id": policy_id,
+        "seed": int(seed),
+    }
+    if schedule_id is not None:
+        identity["schedule_id"] = schedule_id
+    if condition_id is not None:
+        identity["condition_id"] = condition_id
+    return identity
+
+
+def _telemetry_block(
+    relative: str, sidecars, *, trace_digest: str
+) -> dict:
+    """Manifest/checkpoint binding for one cell's published sidecars."""
+
+    return {
+        "cost_path": f"{relative}/{COST_SIDECAR_FILENAME}",
+        "cost_digest": sidecars.cost_digest,
+        "decision_audit_path": (
+            f"{relative}/{DECISION_AUDIT_SIDECAR_FILENAME}"
+        ),
+        "decision_audit_digest": sidecars.decision_audit_digest,
+        "trace_digest": trace_digest,
+        "measurement_clock": MEASUREMENT_CLOCK,
+    }
+
+
+def _publish_cell_telemetry(
+    telemetry: CellTelemetry,
+    staging: Path,
+    relative: str,
+    *,
+    identity: Mapping[str, object],
+    config_digest: str,
+    artifact_digest: str | None,
+    trace_digest: str | None,
+) -> dict:
+    """Write one cell's sidecars into staging and return the binding block."""
+
+    if trace_digest is None:
+        raise EvaluationError(
+            "telemetry publication requires a validated trace digest"
+        )
+    sidecar_dir = staging / relative
+    try:
+        sidecars = telemetry.write_sidecars(
+            sidecar_dir,
+            identity=identity,
+            config_digest=config_digest,
+            artifact_digests={"aggregation_artifact": artifact_digest},
+            trace_digest=trace_digest,
+        )
+    except CostError as exc:
+        raise EvaluationError(f"telemetry publication failed: {exc}") from exc
+    return _telemetry_block(relative, sidecars, trace_digest=trace_digest)
+
+
+def _reuse_cell_telemetry(
+    *,
+    checkpoint_directory: Path,
+    record: Mapping[str, object],
+    staging: Path,
+    relative: str,
+    label: str,
+    expected_config_digest: str,
+    expected_artifact_digest: str | None,
+    expected_trace_digest: str | None,
+) -> dict:
+    """Copy and revalidate a reused cell's sidecars, or fail closed."""
+
+    block = record.get("telemetry")
+    if not isinstance(block, Mapping):
+        raise EvaluationError(
+            f"{label} resume is missing a telemetry block"
+        )
+    expected_keys = {
+        "cost_path",
+        "cost_digest",
+        "decision_audit_path",
+        "decision_audit_digest",
+        "trace_digest",
+        "measurement_clock",
+    }
+    if set(block) != expected_keys:
+        raise EvaluationError(
+            f"{label} resume telemetry block has unexpected keys"
+        )
+    if expected_trace_digest is None:
+        raise EvaluationError(
+            f"{label} resume telemetry requires a validated trace digest"
+        )
+    if block.get("trace_digest") != expected_trace_digest:
+        raise EvaluationError(
+            f"{label} resume telemetry trace_digest mismatch"
+        )
+
+    def _source(key: str) -> Path:
+        value = block.get(key)
+        if not isinstance(value, str) or not value or os.path.isabs(value):
+            raise EvaluationError(
+                f"{label} resume telemetry {key} must be a relative path"
+            )
+        candidate = checkpoint_directory / value
+        try:
+            resolved = candidate.resolve()
+            root = checkpoint_directory.resolve()
+        except OSError as exc:
+            raise EvaluationError(
+                f"{label} resume telemetry {key} is unresolvable: {exc}"
+            ) from exc
+        if not resolved.is_relative_to(root):
+            raise EvaluationError(
+                f"{label} resume telemetry {key} escapes the checkpoint"
+            )
+        if not resolved.is_file():
+            raise EvaluationError(
+                f"{label} resume telemetry {key} is missing: {value}"
+            )
+        return resolved
+
+    cost_source = _source("cost_path")
+    audit_source = _source("decision_audit_path")
+    for key, source in (
+        ("cost_digest", cost_source),
+        ("decision_audit_digest", audit_source),
+    ):
+        declared = block.get(key)
+        try:
+            observed = file_digest(source)
+        except CostError as exc:
+            raise EvaluationError(
+                f"{label} resume telemetry {key} unreadable: {exc}"
+            ) from exc
+        if observed != declared:
+            raise EvaluationError(
+                f"{label} resume telemetry {key} mismatch: checkpoint "
+                f"{declared} does not match file {observed}"
+            )
+
+    sidecar_dir = staging / relative
+    try:
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        cost_target = sidecar_dir / COST_SIDECAR_FILENAME
+        audit_target = sidecar_dir / DECISION_AUDIT_SIDECAR_FILENAME
+        shutil.copyfile(cost_source, cost_target)
+        shutil.copyfile(audit_source, audit_target)
+    except OSError as exc:
+        raise EvaluationError(
+            f"{label} could not reuse telemetry sidecars: {exc}"
+        ) from exc
+
+    try:
+        payload = load_cost_payload(cost_target)
+        load_decision_audit_records(audit_target)
+    except CostError as exc:
+        raise EvaluationError(
+            f"{label} reused telemetry sidecar is invalid: {exc}"
+        ) from exc
+    measurement = payload["measurement"]
+    if measurement["config_digest"] != expected_config_digest:
+        raise EvaluationError(
+            f"{label} reused telemetry config_digest mismatch"
+        )
+    artifacts = measurement["artifact_digests"]
+    if artifacts.get("aggregation_artifact") != expected_artifact_digest:
+        raise EvaluationError(
+            f"{label} reused telemetry artifact_digest mismatch"
+        )
+    if measurement["trace_digest"] != expected_trace_digest:
+        raise EvaluationError(
+            f"{label} reused telemetry trace_digest mismatch"
+        )
+    # Rebuild the binding against this run's canonical relative path so a
+    # reused cell's manifest/checkpoint never points at a foreign location.
+    return {
+        "cost_path": f"{relative}/{COST_SIDECAR_FILENAME}",
+        "cost_digest": block["cost_digest"],
+        "decision_audit_path": (
+            f"{relative}/{DECISION_AUDIT_SIDECAR_FILENAME}"
+        ),
+        "decision_audit_digest": block["decision_audit_digest"],
+        "trace_digest": block["trace_digest"],
+        "measurement_clock": block["measurement_clock"],
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -645,6 +886,7 @@ def _manifest_entry(
     artifact_digest: str | None,
     resolution: PlacementResolution | None = None,
     match: AblationMatchSummary | None = None,
+    telemetry: Mapping[str, object] | None = None,
 ) -> dict:
     relative = _relative_trace_path(policy.id, seed)
     entry = {
@@ -666,6 +908,8 @@ def _manifest_entry(
     }
     if resolution is not None:
         entry["placement"] = resolution.identity_payload()
+    if telemetry is not None:
+        entry["telemetry"] = dict(telemetry)
     ablation = ablation_entry_metadata(match, policy.id)
     if ablation is not None:
         entry[ABLATION_METADATA_KEY] = ablation
@@ -787,6 +1031,7 @@ def _execute_cell_run(
     evaluation_dataset: Dataset | None,
     evaluation_dataset_loader: DatasetLoader | None,
     controller: OutgoingController | None,
+    telemetry: CellTelemetry | None = None,
 ) -> None:
     """Run one cell through the production composition and commit its trace.
 
@@ -816,6 +1061,7 @@ def _execute_cell_run(
             evaluation_dataset=evaluation_dataset,
             evaluation_dataset_loader=evaluation_dataset_loader,
             controller=controller,
+            telemetry=telemetry,
         )
     except EvaluationError:
         raise
@@ -829,12 +1075,15 @@ def _validate_cell_trace(
     *,
     label: str,
     measure: bool = False,
-) -> dict | None:
+    capture_digest: bool = False,
+) -> CellTraceValidation:
     """Validate one committed schema-v1 trace; ``label`` supplies exact wording.
 
     With ``measure=True`` the validated reader's events are also reduced to the
     final evaluated round's per-node metrics (used by the final phase to embed
-    a compact ``metrics`` block per manifest entry). The reduction runs on the
+    a compact ``metrics`` block per manifest entry). With ``capture_digest=True``
+    the canonical digest of the validated trace manifest is returned so an
+    opt-in sidecar can bind the exact trace content. Both reductions run on the
     reader that already validated the trace, so no trace is opened twice.
     """
 
@@ -846,14 +1095,30 @@ def _validate_cell_trace(
                     f"{label} produced schema version {schema!r}, expected "
                     f"{SCHEMA_VERSION}"
                 )
+            digest: str | None = None
+            if capture_digest:
+                manifest = getattr(reader, "manifest", None)
+                if not isinstance(manifest, Mapping):
+                    raise EvaluationError(
+                        f"{label} trace reader exposes no manifest for telemetry"
+                    )
+                try:
+                    digest = trace_artifact_digest(manifest)
+                except CostError as exc:
+                    raise EvaluationError(
+                        f"{label} trace digest failed: {exc}"
+                    ) from exc
             if not measure:
-                return None
+                return CellTraceValidation(trace_digest=digest, metrics=None)
             events = getattr(reader, "events", None)
             if events is None:
                 raise EvaluationError(
                     f"{label} trace reader exposes no events for metrics"
                 )
-            return _final_round_metrics_from_events(tuple(events), label=label)
+            metrics = _final_round_metrics_from_events(
+                tuple(events), label=label
+            )
+            return CellTraceValidation(trace_digest=digest, metrics=metrics)
     except EvaluationError:
         raise
     except (TrajectoryError, OSError) as exc:
@@ -1016,6 +1281,7 @@ def _checkpoint_record(
     reused: bool,
     resolution: PlacementResolution | None = None,
     match: AblationMatchSummary | None = None,
+    telemetry: Mapping[str, object] | None = None,
     extra: Mapping[str, object] | None = None,
 ) -> dict:
     """One canonical per-cell checkpoint line.
@@ -1058,6 +1324,8 @@ def _checkpoint_record(
         record["ablation_protocol_version"] = match.protocol_version
     if extra is not None:
         record.update(extra)
+    if telemetry is not None:
+        record["telemetry"] = dict(telemetry)
     return record
 
 
@@ -1069,6 +1337,7 @@ def _checkpoint_record_reusable(
     expected_artifact_digest: str | None,
     label: str,
     expected_placement: Mapping[str, object] | None = None,
+    require_telemetry: bool = False,
 ) -> bool:
     """Decide whether a checkpoint cell may be reused, or fail closed.
 
@@ -1082,6 +1351,11 @@ def _checkpoint_record_reusable(
     """
 
     if record is None:
+        return False
+    if require_telemetry and not isinstance(record.get("telemetry"), Mapping):
+        # A legacy checkpoint without sidecars is not reusable under the
+        # telemetry contract; the cell is recomputed so a fresh matched sidecar
+        # is published rather than silently mixing unmeasured evidence.
         return False
     observed_schedule = record.get("schedule_digest")
     if observed_schedule != expected_schedule_digest:
@@ -1184,18 +1458,23 @@ def _resume_cell(
     validator: TraceValidator,
     measure: bool,
     placement_identity: Mapping[str, object] | None = None,
-) -> tuple[bool, dict | None]:
+    collect_telemetry: bool = False,
+    telemetry_relative: str | None = None,
+) -> tuple[bool, CellTraceValidation | None, dict | None]:
     """Try to reuse a manifest-matched checkpoint cell.
 
-    Returns ``(reused, metrics)``. A digest-mismatched or unreadable reuse
-    candidate is either rejected up front (schedule/artifact/placement mismatch
-    fails closed) or silently recomputed (missing trace, unreadable trace, or a
-    redacted-config mismatch), so stale evidence is never mixed into a
-    published study.
+    Returns ``(reused, validation, telemetry_block)``. A digest-mismatched or
+    unreadable reuse candidate is either rejected up front (schedule/artifact/
+    placement mismatch fails closed) or silently recomputed (missing trace,
+    unreadable trace, or a redacted-config mismatch), so stale evidence is never
+    mixed into a published study. When ``collect_telemetry`` is set, a reused
+    cell must carry a matched, digest-valid, identity-matching sidecar pair; a
+    missing or tampered sidecar fails closed rather than publishing unmeasured
+    evidence.
     """
 
     if checkpoint_directory is None:
-        return False, None
+        return False, None, None
     record = checkpoint_records.get(
         _checkpoint_pairing_key(policy.id, seed, schedule.id)
     )
@@ -1206,25 +1485,46 @@ def _resume_cell(
         expected_artifact_digest=artifact_digest,
         label=label,
         expected_placement=placement_identity,
+        require_telemetry=collect_telemetry,
     ):
-        return False, None
+        return False, None, None
     assert record is not None  # narrowed by _checkpoint_record_reusable
     source = _checkpoint_trace_source(
         checkpoint_directory, record, label=label
     )
     if source is None:
-        return False, None
+        return False, None, None
     try:
         _copy_checkpoint_trace(
             source, trace_dir, staging_root=staging_root, label=label
         )
-        metrics = _validate_cell_trace(
-            validator, trace_dir, label=label, measure=measure
+        validation = _validate_cell_trace(
+            validator,
+            trace_dir,
+            label=label,
+            measure=measure,
+            capture_digest=collect_telemetry,
         )
     except EvaluationError:
         shutil.rmtree(trace_dir, ignore_errors=True)
-        return False, None
-    return True, metrics
+        return False, None, None
+    telemetry_block: dict | None = None
+    if collect_telemetry:
+        if telemetry_relative is None:
+            raise EvaluationError(
+                f"{label} reuse requires a telemetry relative path"
+            )
+        telemetry_block = _reuse_cell_telemetry(
+            checkpoint_directory=checkpoint_directory,
+            record=record,
+            staging=staging_root,
+            relative=telemetry_relative,
+            label=label,
+            expected_config_digest=_redacted_cell_digest(config),
+            expected_artifact_digest=artifact_digest,
+            expected_trace_digest=validation.trace_digest,
+        )
+    return True, validation, telemetry_block
 
 
 def run_baseline_study(
@@ -1237,6 +1537,7 @@ def run_baseline_study(
     evaluation_dataset_loader: DatasetLoader | None = None,
     progress: ProgressHook | None = None,
     trace_validator: TraceValidator | None = None,
+    collect_telemetry: bool = False,
 ) -> BaselineStudyResult:
     """Run every (seed, policy) cell and atomically publish a baseline manifest.
 
@@ -1307,6 +1608,7 @@ def run_baseline_study(
             relative = _relative_trace_path(policy.id, seed)
             trace_dir = staging / relative
             label = f"policy {policy.id!r} seed {seed}"
+            telemetry = CellTelemetry() if collect_telemetry else None
             _execute_cell_run(
                 config,
                 trace_dir,
@@ -1317,10 +1619,32 @@ def run_baseline_study(
                 evaluation_dataset=evaluation_dataset,
                 evaluation_dataset_loader=evaluation_dataset_loader,
                 controller=None,
+                telemetry=telemetry,
             )
-            _validate_cell_trace(validator, trace_dir, label=label)
+            validation = _validate_cell_trace(
+                validator,
+                trace_dir,
+                label=label,
+                capture_digest=collect_telemetry,
+            )
 
             artifact_digest = _artifact_digest(policy.aggregation, artifact_cache)
+            telemetry_block: dict | None = None
+            if telemetry is not None:
+                telemetry_block = _publish_cell_telemetry(
+                    telemetry,
+                    staging,
+                    _baseline_telemetry_relative(policy.id, seed),
+                    identity=_telemetry_identity(
+                        phase="baseline",
+                        study_id=resolved.study_id,
+                        policy_id=policy.id,
+                        seed=int(seed),
+                    ),
+                    config_digest=_redacted_cell_digest(config),
+                    artifact_digest=artifact_digest,
+                    trace_digest=validation.trace_digest,
+                )
             entry = _manifest_entry(
                 study=resolved,
                 policy=policy,
@@ -1329,6 +1653,7 @@ def run_baseline_study(
                 artifact_digest=artifact_digest,
                 resolution=placements.get(int(seed)),
                 match=ablation_match,
+                telemetry=telemetry_block,
             )
             published_cells.append(
                 BaselineCell(
@@ -1419,6 +1744,7 @@ def _selection_manifest_entry(
     reused: bool = False,
     resolution: PlacementResolution | None = None,
     match: AblationMatchSummary | None = None,
+    telemetry: Mapping[str, object] | None = None,
 ) -> dict:
     """One per-cell selection manifest entry.
 
@@ -1450,6 +1776,8 @@ def _selection_manifest_entry(
     }
     if resolution is not None:
         entry["placement"] = resolution.identity_payload()
+    if telemetry is not None:
+        entry["telemetry"] = dict(telemetry)
     ablation = ablation_entry_metadata(match, policy.id)
     if ablation is not None:
         entry[ABLATION_METADATA_KEY] = ablation
@@ -1520,6 +1848,7 @@ def run_selection_phase(
     trace_validator: TraceValidator | None = None,
     resume_from: str | os.PathLike[str] | None = None,
     ablation_match: AblationMatchSummary | None = None,
+    collect_telemetry: bool = False,
 ) -> SelectionResult:
     """Run the selection panel over known schedules and freeze the output.
 
@@ -1665,7 +1994,11 @@ def run_selection_phase(
             artifact_digest = _artifact_digest(
                 policy.aggregation, artifact_cache
             )
-            reused, _metrics = _resume_cell(
+            telemetry = CellTelemetry() if collect_telemetry else None
+            telemetry_relative = _selection_telemetry_relative(
+                policy.id, seed, schedule.id
+            )
+            reused, validation, telemetry_block = _resume_cell(
                 checkpoint_directory=checkpoint_directory,
                 checkpoint_records=checkpoint_records,
                 policy=policy,
@@ -1684,6 +2017,8 @@ def run_selection_phase(
                     if resolution is not None
                     else None
                 ),
+                collect_telemetry=collect_telemetry,
+                telemetry_relative=telemetry_relative,
             )
             if not reused:
                 _execute_cell_run(
@@ -1696,8 +2031,30 @@ def run_selection_phase(
                     evaluation_dataset=evaluation_dataset,
                     evaluation_dataset_loader=evaluation_dataset_loader,
                     controller=controller,
+                    telemetry=telemetry,
                 )
-                _validate_cell_trace(validator, trace_dir, label=label)
+                validation = _validate_cell_trace(
+                    validator,
+                    trace_dir,
+                    label=label,
+                    capture_digest=collect_telemetry,
+                )
+                if telemetry is not None:
+                    telemetry_block = _publish_cell_telemetry(
+                        telemetry,
+                        staging,
+                        telemetry_relative,
+                        identity=_telemetry_identity(
+                            phase="selection",
+                            study_id=study.study_id,
+                            policy_id=policy.id,
+                            seed=int(seed),
+                            schedule_id=schedule.id,
+                        ),
+                        config_digest=_redacted_cell_digest(config),
+                        artifact_digest=artifact_digest,
+                        trace_digest=validation.trace_digest,
+                    )
 
             _append_checkpoint(
                 checkpoint_handle,
@@ -1715,6 +2072,7 @@ def run_selection_phase(
                     reused=reused,
                     resolution=resolution,
                     match=match,
+                    telemetry=telemetry_block,
                 ),
             )
             entry = _selection_manifest_entry(
@@ -1729,6 +2087,7 @@ def run_selection_phase(
                 reused=reused,
                 resolution=resolution,
                 match=match,
+                telemetry=telemetry_block,
             )
             published_cells.append(
                 SelectionCell(
@@ -1897,6 +2256,7 @@ def _final_manifest_entry(
     reused: bool = False,
     resolution: PlacementResolution | None = None,
     match: AblationMatchSummary | None = None,
+    telemetry: Mapping[str, object] | None = None,
 ) -> dict:
     """One per-cell final manifest entry.
 
@@ -1922,6 +2282,7 @@ def _final_manifest_entry(
         reused=reused,
         resolution=resolution,
         match=match,
+        telemetry=telemetry,
     )
     entry["held_out"] = bool(held_out)
     if metrics is not None:
@@ -2001,6 +2362,7 @@ def run_final_phase(
     trace_validator: TraceValidator | None = None,
     resume_from: str | os.PathLike[str] | None = None,
     ablation_match: AblationMatchSummary | None = None,
+    collect_telemetry: bool = False,
 ) -> FinalResult:
     """Run held-out final seeds over known plus reserved schedules.
 
@@ -2195,7 +2557,11 @@ def run_final_phase(
             artifact_digest = _artifact_digest(
                 policy.aggregation, artifact_cache
             )
-            reused, metrics = _resume_cell(
+            telemetry = CellTelemetry() if collect_telemetry else None
+            telemetry_relative = _selection_telemetry_relative(
+                policy.id, seed, schedule.id
+            )
+            reused, validation, telemetry_block = _resume_cell(
                 checkpoint_directory=checkpoint_directory,
                 checkpoint_records=checkpoint_records,
                 policy=policy,
@@ -2214,6 +2580,8 @@ def run_final_phase(
                     if resolution is not None
                     else None
                 ),
+                collect_telemetry=collect_telemetry,
+                telemetry_relative=telemetry_relative,
             )
             if not reused:
                 _execute_cell_run(
@@ -2226,10 +2594,33 @@ def run_final_phase(
                     evaluation_dataset=evaluation_dataset,
                     evaluation_dataset_loader=evaluation_dataset_loader,
                     controller=controller,
+                    telemetry=telemetry,
                 )
-                metrics = _validate_cell_trace(
-                    validator, trace_dir, label=label, measure=True
+                validation = _validate_cell_trace(
+                    validator,
+                    trace_dir,
+                    label=label,
+                    measure=True,
+                    capture_digest=collect_telemetry,
                 )
+                if telemetry is not None:
+                    telemetry_block = _publish_cell_telemetry(
+                        telemetry,
+                        staging,
+                        telemetry_relative,
+                        identity=_telemetry_identity(
+                            phase="final",
+                            study_id=study.study_id,
+                            policy_id=policy.id,
+                            seed=int(seed),
+                            schedule_id=schedule.id,
+                        ),
+                        config_digest=_redacted_cell_digest(config),
+                        artifact_digest=artifact_digest,
+                        trace_digest=validation.trace_digest,
+                    )
+            assert validation is not None
+            metrics = validation.metrics
 
             _append_checkpoint(
                 checkpoint_handle,
@@ -2247,6 +2638,7 @@ def run_final_phase(
                     reused=reused,
                     resolution=resolution,
                     match=match,
+                    telemetry=telemetry_block,
                     extra={
                         "held_out_study_digest": held_out_study_digest(spec),
                         "selection_output_digest": selection_manifest.get(
@@ -2269,6 +2661,7 @@ def run_final_phase(
                 reused=reused,
                 resolution=resolution,
                 match=match,
+                telemetry=telemetry_block,
             )
             published_cells.append(
                 SelectionCell(
@@ -2414,6 +2807,7 @@ def run_held_out_study(
     progress: HeldOutProgressHook | None = None,
     trace_validator: TraceValidator | None = None,
     resume_from: str | os.PathLike[str] | None = None,
+    collect_telemetry: bool = False,
 ) -> HeldOutStudyResult:
     """Run the full selection -> freeze -> final held-out study in one call.
 
@@ -2498,6 +2892,7 @@ def run_held_out_study(
             trace_validator=validator,
             resume_from=selection_resume,
             ablation_match=match,
+            collect_telemetry=collect_telemetry,
         )
         # Durably commit the frozen selection output before the final phase
         # reads it back from disk.
@@ -2516,6 +2911,7 @@ def run_held_out_study(
             trace_validator=validator,
             resume_from=final_resume,
             ablation_match=match,
+            collect_telemetry=collect_telemetry,
         )
         _fsync_dir(final_output)
         # Build the paired per-cell metrics summary from the just-written final

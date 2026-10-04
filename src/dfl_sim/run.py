@@ -41,6 +41,7 @@ from torch.utils.data import Dataset
 from .aggregation import ModelState
 from .attacker import FixedAttackController, OutgoingController
 from .config import ExperimentConfig, load_config
+from .costs import CellTelemetry
 from .data import (
     load_mnist_dataset,
     load_mnist_evaluation_dataset,
@@ -114,6 +115,30 @@ def _resolve_config(config: ConfigInput) -> tuple[ExperimentConfig, Path | None]
     return load_config(source_path), source_path
 
 
+def _combined_diagnostic_sink(
+    sink: Callable[[BayesianDiagnostic], None] | None,
+    telemetry: CellTelemetry | None,
+) -> Callable[[BayesianDiagnostic], None] | None:
+    """Fan a Bayesian diagnostic to the caller's sink and the telemetry hook.
+
+    Returns ``None`` when neither is present so the policy construction path is
+    byte-for-byte unchanged. A telemetry sink failure propagates (the policy
+    already fails closed on a raising diagnostic sink), so a measurement that
+    cannot be recorded aborts the cell instead of silently emitting zeros.
+    """
+
+    if telemetry is None:
+        return sink
+    if sink is None:
+        return telemetry
+
+    def _fan_out(diagnostic: BayesianDiagnostic) -> None:
+        sink(diagnostic)
+        telemetry.record_diagnostic(diagnostic)
+
+    return _fan_out
+
+
 def run_from_config(
     config: ConfigInput,
     *,
@@ -129,6 +154,7 @@ def run_from_config(
     loss_evaluator: LossEvaluatorFactory | None = None,
     controller: OutgoingController | None = None,
     diagnostic_sink: Callable[[BayesianDiagnostic], None] | None = None,
+    telemetry: CellTelemetry | None = None,
 ) -> EpisodeResult:
     """Run one deterministic synchronous DFL episode and return its result.
 
@@ -184,6 +210,8 @@ def run_from_config(
             trace_path, config_path=source_path, alias_paths=aliases
         )
 
+    cell_start = telemetry.now() if telemetry is not None else 0
+
     seeds = resolve_seeds(resolved)
     configure_determinism(
         seeds,
@@ -193,6 +221,8 @@ def run_from_config(
 
     topology: nx.Graph = load_topology(resolved)
     node_ids = tuple(sorted(int(node) for node in topology.nodes()))
+    if telemetry is not None:
+        telemetry.begin_cell(rounds=resolved.rounds, nodes=len(node_ids))
 
     if dataset is not None:
         data = dataset
@@ -230,7 +260,9 @@ def run_from_config(
         else build_policy(
             resolved.aggregation,
             total_rounds=resolved.rounds,
-            diagnostic_sink=diagnostic_sink,
+            diagnostic_sink=_combined_diagnostic_sink(
+                diagnostic_sink, telemetry
+            ),
         )
     )
     episode_observer = (
@@ -257,6 +289,9 @@ def run_from_config(
     base_model = build_model(resolved.model.name, seed=seeds.torch)
     initial_state = clone_state_dict(base_model.state_dict())
 
+    if telemetry is not None:
+        telemetry.add_wall("setup", telemetry.now() - cell_start)
+
     def _execute(
         log_writer: RoundLogWriter | None,
         trace_writer: TraceWriter | None,
@@ -281,6 +316,7 @@ def run_from_config(
                     observer=episode_observer,
                     loss_evaluator=loss_evaluator,
                     controller=outgoing_controller,
+                    telemetry=telemetry,
                 )
             except EpisodeError:
                 raise
@@ -292,7 +328,14 @@ def run_from_config(
             if trace_writer is not None:
                 assert evaluator is not None  # built whenever a trace is set
                 try:
+                    evaluation_start = (
+                        telemetry.now() if telemetry is not None else 0
+                    )
                     evaluated = evaluator.evaluate_round(result)
+                    if telemetry is not None:
+                        telemetry.add_wall(
+                            "evaluation", telemetry.now() - evaluation_start
+                        )
                 except EvaluatorError as exc:
                     raise EpisodeError(
                         f"evaluation failed for round {index} "
@@ -337,6 +380,9 @@ def run_from_config(
                 )
             )
         final_states, round_results = _execute(log_writer, trace_writer)
+
+    if telemetry is not None:
+        telemetry.add_wall("whole_cell", telemetry.now() - cell_start)
 
     return EpisodeResult(
         config=resolved,

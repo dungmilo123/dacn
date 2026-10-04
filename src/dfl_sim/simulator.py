@@ -49,6 +49,12 @@ from .aggregation import (
 )
 from .attacker import FixedAttackController, OutgoingController
 from .config import ExperimentConfig
+from .costs import (
+    CellTelemetry,
+    NodeRoundCost,
+    RoundTelemetry,
+    state_dict_payload_bytes,
+)
 from .models import build_model, load_state_into_model
 from .node import (
     LocalTrainResult,
@@ -379,6 +385,7 @@ def run_round(
     observer: ObservationBuilder | None = None,
     loss_evaluator: LossEvaluatorFactory | None = None,
     controller: OutgoingController | None = None,
+    telemetry: CellTelemetry | None = None,
 ) -> RoundResult:
     """Execute one snapshot-isolated synchronous round and commit atomically.
 
@@ -398,6 +405,16 @@ def run_round(
     policy output, or a weighted-aggregation error) the round aborts before
     commit and no caller tensor is mutated; the returned :class:`RoundResult`
     additionally carries the sorted selected profiles for S04.
+
+    ``telemetry`` is the opt-in cost/observation measurement seam (R023/D041).
+    When ``None`` no clock is read and no payload is counted, so a round is
+    byte-for-byte identical to the pre-telemetry engine. When supplied it times
+    local training, observation construction, policy selection and weighted
+    aggregation at their existing boundaries, counts every directed message's
+    ``numel * element_size`` logical payload at construction (before receiver
+    filtering), and records each node's policy-visible observation plus its
+    selected profile. It is never passed to the policy/observer and cannot
+    change any decision or committed tensor.
     """
 
     train = trainer or local_train_from_snapshot
@@ -427,6 +444,7 @@ def run_round(
     # Phase 2 -- independent local training from each node's own snapshot.
     trained: dict[int, ModelState] = {}
     stats: dict[int, NodeRoundStat] = {}
+    train_start = telemetry.now() if telemetry is not None else 0
     for node in nodes:
         result = train(
             round_start[node],
@@ -457,6 +475,9 @@ def run_round(
                 sorted(int(neighbor) for neighbor in topology.neighbors(node))
             ),
         )
+    train_ns = (
+        telemetry.now() - train_start if telemetry is not None else 0
+    )
 
     # Phase 3 -- compute each sender's canonical outgoing model exactly once
     # through the injected controller. The output is validated against the
@@ -487,6 +508,16 @@ def run_round(
     # never recomputed per recipient: equal values fan out to every neighbor
     # while each recipient tensor has independent storage.
     messages = build_messages(outgoing, topology, round_index=index)
+    if telemetry is not None:
+        message_payload_bytes = sum(
+            state_dict_payload_bytes(message.state) for message in messages
+        )
+        model_payload_bytes = (
+            state_dict_payload_bytes(messages[0].state) if messages else 0
+        )
+    else:
+        message_payload_bytes = 0
+        model_payload_bytes = 0
 
     # Phase 5 -- synchronous receive barrier: validate every inbox completely
     # before any aggregation happens.
@@ -501,6 +532,7 @@ def run_round(
     # plus the delivered senders in canonical order before any arithmetic.
     staged: dict[int, ModelState] = {}
     profiles: dict[int, NodeWeightProfile] = {}
+    node_costs: list[NodeRoundCost] = []
     for node in nodes:
         inbox = inboxes[node]
         sender_states = tuple(
@@ -511,6 +543,9 @@ def run_round(
         )
 
         evaluator = make_evaluator(config, partitions[node], node, index)
+        observation_start = (
+            telemetry.now() if telemetry is not None else 0
+        )
         try:
             observation = active_observer.build_observation(
                 node_id=node,
@@ -543,7 +578,13 @@ def run_round(
                 f"do not match delivered senders {expected_participants} for "
                 f"node={node} round={index}"
             )
+        observation_ns = (
+            telemetry.now() - observation_start
+            if telemetry is not None
+            else 0
+        )
 
+        policy_start = telemetry.now() if telemetry is not None else 0
         try:
             profile = active_policy.select_weights(observation)
         except RoundError:
@@ -563,8 +604,12 @@ def run_round(
                 f"match delivered senders {expected_participants} for "
                 f"node={node} round={index}"
             )
+        policy_ns = (
+            telemetry.now() - policy_start if telemetry is not None else 0
+        )
 
         neighbor_states = [message.state for message in inbox]
+        aggregation_start = telemetry.now() if telemetry is not None else 0
         staged[node] = aggregate_weighted_neighborhood(
             trained[node],
             neighbor_states,
@@ -573,12 +618,34 @@ def run_round(
             round_index=index,
             context=f"node={node} round={index}",
         )
+        aggregation_ns = (
+            telemetry.now() - aggregation_start
+            if telemetry is not None
+            else 0
+        )
         profiles[node] = NodeWeightProfile(
             node_id=node,
             participant_ids=tuple(profile.participant_ids),
             multipliers=tuple(profile.multipliers),
             weights=tuple(profile.weights),
         )
+        if telemetry is not None:
+            telemetry.record_observation(observation, profile)
+            node_costs.append(
+                NodeRoundCost(
+                    node_id=node,
+                    round_index=index,
+                    degree=len(inbox),
+                    delivered_messages=len(inbox),
+                    delivered_payload_bytes=sum(
+                        state_dict_payload_bytes(message.state)
+                        for message in inbox
+                    ),
+                    observation_ns=observation_ns,
+                    policy_ns=policy_ns,
+                    aggregation_ns=aggregation_ns,
+                )
+            )
 
     # Phase 7 -- validate staged invariants against each node's trained model.
     committed: dict[int, ModelState] = {}
@@ -587,6 +654,19 @@ def run_round(
             staged[node],
             reference=trained[node],
             context=f"next-state node={node} round={index}",
+        )
+
+    if telemetry is not None:
+        telemetry.record_round(
+            RoundTelemetry(
+                round_index=index,
+                undirected_links=topology.number_of_edges(),
+                messages=len(messages),
+                payload_bytes=message_payload_bytes,
+                model_payload_bytes=model_payload_bytes,
+                train_ns=train_ns,
+                nodes=tuple(node_costs),
+            )
         )
 
     # Phase 8 -- single simultaneous commit.
