@@ -146,7 +146,7 @@ def _read_json(path: Path) -> Mapping[str, Any]:
 class RobustnessVerifyDeps:
     """Optional injection seams; production uses the real public surfaces."""
 
-    cache_verify: Callable[[str, bool], object] | None = None
+    cache_verify: Callable[..., object] | None = None
     headline_verify: Callable[..., object] | None = None
     load_calibration_config: Callable[..., object] | None = None
     load_artifact: Callable[..., object] | None = None
@@ -765,7 +765,7 @@ def _verify_cache(
 
         verify = mnist_provision.verify_cache
     try:
-        manifest = verify(str(data_root), deep)
+        manifest = verify(str(data_root), deep=deep)
     except Exception as exc:  # noqa: BLE001 - bounded fail-closed boundary
         raise RobustnessVerifyError(
             f"MNIST cache verification failed closed: {_bounded(exc)}"

@@ -311,6 +311,55 @@ def test_calibration_contract_mismatch_is_rejected() -> None:
         _check_calibration_contract(protocol, canonical, mutated, CALIBRATION_TEMPLATE)
 
 
+def test_prepare_calibrations_creates_alpha_parent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Regression (M003/S05/T07): the production calibration publisher refuses
+    # an absent output parent, so the matrix runner must materialize
+    # ``calibration/<alpha>/`` before dispatching each variant. The injected
+    # end-to-end matrix skips ablation calibration, so this ordering was only
+    # exercised by the real canonical execution.
+    from types import SimpleNamespace
+
+    import dfl_sim.robustness_study as rs
+
+    monkeypatch.setattr(rs, "_artifact_derivation", lambda artifact, variant: object())
+    monkeypatch.setattr(rs, "_artifact_aggregate", lambda artifact, variant: "a" * 64)
+    monkeypatch.setattr(
+        rs, "matched_calibration_input_digest", lambda derivation: "b" * 64
+    )
+
+    protocol = load_robustness_protocol(CANONICAL_CONFIG)
+    destination = tmp_path / "matrix"
+    (destination / "generated-configs").mkdir(parents=True)
+    (destination / "diagnostics").mkdir(parents=True)
+    canonical = validate_protocol(protocol, artifact_root=str(destination))
+    seen: list[bool] = []
+
+    def fake_calibrate(config_path, out, variant, diagnostics_dir):
+        seen.append(Path(out).parent.is_dir())
+        return SimpleNamespace(returncode=0)
+
+    block = rs._prepare_calibrations(
+        RobustnessDeps(
+            calibrate=fake_calibrate,
+            load_artifact=lambda path: SimpleNamespace(),
+            repo_root=REPO_ROOT,
+        ),
+        protocol,
+        canonical,
+        REPO_ROOT,
+        destination,
+        None,
+        destination / "diagnostics",
+        include_ablations=True,
+    )
+    assert seen and all(seen)
+    assert set(block) == {"a0p1", "a0p5", "a1"}
+    for token in ("a0p1", "a0p5", "a1"):
+        assert (destination / "calibration" / token).is_dir()
+
+
 def test_injected_protocol_requires_explicit_runner(tmp_path: Path) -> None:
     protocol = injected_protocol()
     config_path = tmp_path / "p.yaml"

@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -27,6 +28,7 @@ from dfl_sim.robustness_verify import (
     RobustnessVerifyDeps,
     RobustnessVerifyError,
     _confined,
+    _verify_cache,
     verify_robustness_study,
 )
 from test_robustness_study import REPO_ROOT, fixture_study, run_injected_matrix
@@ -208,3 +210,40 @@ def test_verify_rejects_foreign_trace_path(
     path.write_text(json.dumps(payload))
     with pytest.raises(RobustnessVerifyError):
         verify_robustness_study(str(root), deps=_DEPS, write=False)
+
+
+# --------------------------------------------------------------------------- #
+# Real-MNIST cache call convention
+# --------------------------------------------------------------------------- #
+def test_verify_cache_passes_deep_as_keyword(tmp_path: Path) -> None:
+    """Regression (M003/S05/T07): production ``verify_cache`` is
+    ``verify_cache(data_root, *, deep=...)``. Passing ``deep`` positionally
+    raised ``TypeError`` and failed the real matrix audit closed only after all
+    nine conditions had completed. The injected fixture never reaches this
+    branch, so assert the call convention directly against a keyword-only
+    fake."""
+
+    class _Manifest:
+        manifest_digest = "a" * 64
+
+    seen: dict = {}
+
+    def fake_verify(data_root, *, deep=True):  # keyword-only, like production
+        seen["data_root"] = data_root
+        seen["deep"] = deep
+        return _Manifest()
+
+    protocol = SimpleNamespace(data_provenance="real_mnist", data_root=str(tmp_path))
+    frozen = {"cache": {"data_root": str(tmp_path), "manifest_digest": "a" * 64}}
+    deps = RobustnessVerifyDeps(cache_verify=fake_verify)
+
+    result = _verify_cache(
+        frozen=frozen,
+        protocol=protocol,
+        deps=deps,
+        repo_root=tmp_path,
+        deep=True,
+    )
+
+    assert seen == {"data_root": str(tmp_path), "deep": True}
+    assert result["manifest_digest"] == "a" * 64

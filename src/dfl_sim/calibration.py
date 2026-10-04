@@ -290,6 +290,14 @@ def count_prior_states(
     of the ``j``-th neighbor. Only benign receivers contribute (the
     receiver-is-benign conditioning), and each state contains at most one
     malicious bit because exactly one node is compromised per attacked episode.
+
+    Each episode's realized topology is rebuilt from its own stable episode
+    seed (the same graph :func:`~dfl_sim.calibration_scoring.collect_episode`
+    runs). For seed-independent topologies (``line2``/``chain3``) this is byte
+    identical to a single base-graph count; for a seed-derived
+    ``watts_strogatz`` graph it is required, because every episode realizes a
+    different graph and the prior support must cover every degree the records
+    can contain.
     """
 
     if not isinstance(config, CalibrationConfig):
@@ -297,20 +305,23 @@ def count_prior_states(
             "count_prior_states requires a validated CalibrationConfig, got "
             f"{type(config).__name__}"
         )
-    try:
-        topology = load_topology(config.experiment)
-    except TopologyError as exc:
-        raise CalibrationError(f"calibration topology failed: {exc}") from exc
-
-    neighbors = {
-        int(node): tuple(sorted(int(nb) for nb in topology.neighbors(node)))
-        for node in topology.nodes()
-    }
 
     raw: dict[int, Counter[tuple[int, ...]]] = {}
     benign_observations = 0
     for spec in specs:
+        try:
+            resolved = derive_experiment_config(config, spec)
+            topology = load_topology(resolved)
+        except (CalibrationError, TopologyError) as exc:
+            raise CalibrationError(
+                "calibration topology failed for episode "
+                f"{spec.index}: {_bounded_detail(exc)}"
+            ) from exc
         compromised = spec.node
+        neighbors = {
+            int(node): tuple(sorted(int(nb) for nb in topology.neighbors(node)))
+            for node in topology.nodes()
+        }
         for receiver, receiver_neighbors in neighbors.items():
             if not receiver_neighbors:
                 continue

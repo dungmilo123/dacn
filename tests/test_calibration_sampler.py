@@ -225,6 +225,44 @@ def test_count_prior_states_rejects_unvalidated_type() -> None:
         count_prior_states({"episodes": 2}, ())  # type: ignore[arg-type]
 
 
+def test_prior_counts_cover_seed_derived_ws_episode_degrees() -> None:
+    # Regression (M003/S05/T07): a Watts-Strogatz topology is seeded by the
+    # episode seed, so every calibration episode realizes a different graph.
+    # The prior support must span every episode's realized degrees, not only
+    # the base experiment's graph, or the posterior/Brier step fails closed
+    # with "empty-support posterior: no prior for degree".
+    from dfl_sim.calibration import derive_experiment_config
+    from dfl_sim.topology import load_topology
+    from helpers import make_config
+
+    experiment = make_config().model_dump(mode="json")
+    experiment["topology"] = {
+        "kind": "watts_strogatz",
+        "n": 10,
+        "k": 2,
+        "p": 0.3,
+    }
+    config = parse_dict(
+        base_dict(experiment=experiment, episodes=16, p0=0.5)
+    )
+    schedule, counts = build_schedule_and_counts(config)
+
+    base_degrees = {
+        int(node_degree)
+        for _node, node_degree in load_topology(config.experiment).degree()
+    }
+    episode_degrees: set[int] = set()
+    for spec in schedule.specs:
+        topology = load_topology(derive_experiment_config(config, spec))
+        episode_degrees.update(int(value) for _node, value in topology.degree())
+
+    assert base_degrees <= set(counts.counts)
+    assert set(counts.counts) == episode_degrees
+    # The old single-base-graph count missed degrees realized by other episode
+    # seeds; this assertion pins that the fix is actually exercised.
+    assert episode_degrees - base_degrees
+
+
 # --------------------------------------------------------------------------- #
 # Variant effective-intensity selection (S03/T01)
 # --------------------------------------------------------------------------- #

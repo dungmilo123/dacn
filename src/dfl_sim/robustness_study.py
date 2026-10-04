@@ -1383,6 +1383,11 @@ def _prepare_calibrations(
         variants: dict[str, object] = {}
         for variant in CALIBRATION_VARIANTS:
             variant_dest = destination / CALIBRATION_DIRNAME / token / variant
+            # The public calibration publisher deliberately refuses to create
+            # an absent output parent, so the orchestrator must materialize the
+            # per-alpha directory before dispatching each variant (the headline
+            # runner does the same for its shared calibration root).
+            variant_dest.parent.mkdir(parents=True, exist_ok=True)
             prior = (
                 resume_root / CALIBRATION_DIRNAME / token / variant
                 if resume_root is not None
