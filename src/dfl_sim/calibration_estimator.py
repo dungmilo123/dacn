@@ -41,12 +41,20 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import ValidationError
+
+from .ablation import calibration_config_digest
 from .bayesian_artifact import (
+    ABLATION_PROTOCOL_VERSION,
     ARTIFACT_SCHEMA,
     ARTIFACT_SCHEMA_VERSION,
+    CANDIDATE_PROTOCOL,
+    ISOLATION_STATEMENTS,
     LIKELIHOOD_FILENAME,
+    NO_BELIEF_VARIANT,
     PAYOFF_FILENAME,
     ArtifactManifest,
+    CalibrationDerivation,
     CoverageMetadata,
     LikelihoodCell,
     PayoffCell,
@@ -62,7 +70,11 @@ from .calibration import (
     feasible_prior_states,
 )
 from .calibration_config import CalibrationConfig
-from .calibration_scoring import CalibrationCollection, NodeRoundRecord
+from .calibration_scoring import (
+    CalibrationCollection,
+    CollectionProvenance,
+    NodeRoundRecord,
+)
 
 __all__ = [
     "CalibrationEstimationError",
@@ -210,7 +222,10 @@ def _require_config(config: object) -> CalibrationConfig:
 # Prior
 # --------------------------------------------------------------------------- #
 def _estimate_prior(
-    config: CalibrationConfig, prior_counts: PriorStateCounts
+    config: CalibrationConfig,
+    prior_counts: PriorStateCounts,
+    *,
+    uniform: bool = False,
 ) -> tuple[tuple[PriorCell, ...], list[int]]:
     if not isinstance(prior_counts, PriorStateCounts):
         raise CalibrationEstimationError(
@@ -248,15 +263,28 @@ def _estimate_prior(
         total = 0
         for state in feasible:
             total += int(raw.get(state, 0))
-        denominator = total + alpha * len(feasible)
-        if not math.isfinite(denominator) or denominator <= 0.0:
-            raise CalibrationEstimationError(
-                f"prior normalization denominator for degree {degree} is invalid"
-            )
+        if uniform:
+            # Exact uniform mass over the complete feasible joint-state support
+            # per degree (D036). The empirical counts above are still measured
+            # and reported through the support diagnostics, never synthesized.
+            uniform_probability = 1.0 / len(feasible)
+            denominator = None
+        else:
+            uniform_probability = 0.0
+            denominator = total + alpha * len(feasible)
+            if not math.isfinite(denominator) or denominator <= 0.0:
+                raise CalibrationEstimationError(
+                    "prior normalization denominator for degree "
+                    f"{degree} is invalid"
+                )
         running = 0.0
         for state in feasible:
             count = int(raw.get(state, 0))
-            probability = (count + alpha) / denominator
+            probability = (
+                uniform_probability
+                if uniform
+                else (count + alpha) / float(denominator)  # type: ignore[arg-type]
+            )
             _finite(probability, label="prior probability", context=f"degree {degree}")
             if probability < 0.0 or probability > 1.0:
                 raise CalibrationEstimationError(
@@ -290,7 +318,10 @@ def _estimate_prior(
 # Likelihood
 # --------------------------------------------------------------------------- #
 def _estimate_likelihood(
-    config: CalibrationConfig, records: Sequence[NodeRoundRecord]
+    config: CalibrationConfig,
+    records: Sequence[NodeRoundRecord],
+    *,
+    uniform: bool = False,
 ) -> tuple[tuple[LikelihoodCell, ...], int, int, list[int]]:
     alpha = float(config.smoothing_alpha)
     cardinality = _evidence_cardinality(config)
@@ -335,17 +366,29 @@ def _estimate_likelihood(
             for (db, pg, lt, _evidence), count in counts.items()
             if db == degree_bin and pg == progress and lt == local_type
         )
-        denominator = total + alpha * len(support)
-        if not math.isfinite(denominator) or denominator <= 0.0:
-            raise CalibrationEstimationError(
-                f"likelihood normalization denominator invalid for "
-                f"({degree_bin!r}, {progress!r}, {local_type})"
-            )
+        if uniform:
+            # Exact uniform mass over the complete evidence support for both
+            # local types in every reached context (D036). Observed counts are
+            # still measured below and reported through support diagnostics.
+            uniform_probability = 1.0 / len(support)
+            denominator = None
+        else:
+            uniform_probability = 0.0
+            denominator = total + alpha * len(support)
+            if not math.isfinite(denominator) or denominator <= 0.0:
+                raise CalibrationEstimationError(
+                    f"likelihood normalization denominator invalid for "
+                    f"({degree_bin!r}, {progress!r}, {local_type})"
+                )
         running = 0.0
         for evidence in support:
             key = (degree_bin, progress, local_type, evidence)
             count = counts.get(key, 0)
-            probability = (count + alpha) / denominator
+            probability = (
+                uniform_probability
+                if uniform
+                else (count + alpha) / float(denominator)  # type: ignore[arg-type]
+            )
             _finite(
                 probability,
                 label="likelihood probability",
@@ -557,6 +600,72 @@ def _posterior_calibration(
 
 
 # --------------------------------------------------------------------------- #
+# Derivation metadata assembly
+# --------------------------------------------------------------------------- #
+def _bounded(detail: object, *, limit: int = 400) -> str:
+    """Collapse whitespace and truncate a derivation diagnostic."""
+
+    collapsed = " ".join(str(detail).split())
+    if len(collapsed) > limit:
+        collapsed = collapsed[:limit] + "..."
+    return collapsed
+
+
+def build_derivation(
+    config: CalibrationConfig,
+    provenance: CollectionProvenance,
+    *,
+    calibration_episodes: int,
+    calibration_rounds: int,
+) -> CalibrationDerivation:
+    """Build the digest-covered derivation metadata for one calibrated artifact.
+
+    The declared calibration-config digest is path-independent and
+    variant-normalized (full/no_belief/no_strategic share one source identity);
+    the dataset/membership/pairing digests are the immutable content
+    fingerprints captured at collection. Every field is validated by the strict
+    :class:`CalibrationDerivation` contract, so a malformed fingerprint or an
+    inconsistent variant/effective mixture fails closed here, before any byte
+    is serialized.
+    """
+
+    if not isinstance(provenance, CollectionProvenance):
+        raise CalibrationEstimationError(
+            "derivation requires a CollectionProvenance, got "
+            f"{type(provenance).__name__}"
+        )
+    try:
+        config_digest = calibration_config_digest(config.model_dump(mode="json"))
+    except Exception as exc:  # AblationError, bounded and re-raised
+        raise CalibrationEstimationError(
+            f"calibration config identity failed: {_bounded(exc)}"
+        ) from exc
+    try:
+        return CalibrationDerivation(
+            protocol_version=ABLATION_PROTOCOL_VERSION,
+            variant=config.variant,
+            isolation_statement=ISOLATION_STATEMENTS[config.variant],
+            source_mu_a=tuple(float(value) for value in config.mu_a),
+            effective_mu_a=tuple(float(value) for value in config.effective_mu_a),
+            seed=int(config.experiment.seed),
+            calibration_config_digest=config_digest,
+            dataset_inputs_digest=provenance.dataset_inputs_digest,
+            partition_membership_digest=provenance.partition_membership_digest,
+            schedule_pairing_digest=provenance.schedule_pairing_digest,
+            episodes=int(calibration_episodes),
+            rounds=int(calibration_rounds),
+            design_size=int(config.design_split_size),
+            candidate_protocol=CANDIDATE_PROTOCOL,
+            candidate_cap=int(config.action_space.degree_cap),
+            data_provenance=provenance.data_provenance,
+        )
+    except ValidationError as exc:
+        raise CalibrationEstimationError(
+            f"derivation metadata invalid: {_bounded(exc)}"
+        ) from exc
+
+
+# --------------------------------------------------------------------------- #
 # Assembly
 # --------------------------------------------------------------------------- #
 def estimate_artifact(
@@ -566,6 +675,7 @@ def estimate_artifact(
     *,
     calibration_episodes: int,
     calibration_rounds: int,
+    provenance: CollectionProvenance | None = None,
 ) -> EstimatedArtifact:
     """Estimate every schema-v1 table from collected records and freeze bytes.
 
@@ -575,6 +685,26 @@ def estimate_artifact(
     declared payload and aggregate digests. Raises
     :class:`CalibrationEstimationError` on any invalid input before
     serialization.
+
+    The ``variant`` on ``config`` selects the belief-ablation transform:
+
+    * ``full`` and ``no_strategic`` keep the smoothed empirical prior and
+      likelihood; ``no_strategic`` only changes the effective attacker mixture
+      used at schedule build time, and its fresh records re-estimate all three
+      tables.
+    * ``no_belief`` replaces the prior with exact uniform mass over the
+      feasible joint states per degree and the likelihood with exact uniform
+      mass over the complete evidence support for both local types in every
+      reached context. The payoff table is still estimated from the unchanged
+      records, so full and no-belief share byte-identical payoff tables. Its
+      Brier-style posterior diagnostic is explicitly marked non-applicable
+      rather than presented as meaningful belief calibration.
+
+    When ``provenance`` is supplied (the production calibration path always
+    supplies it) the manifest also carries digest-covered
+    :class:`CalibrationDerivation` metadata. Callers that omit it get a
+    loader-valid legacy-style artifact without derivation metadata, which the
+    ablation match gate rejects for comparison.
     """
 
     config = _require_config(config)
@@ -590,18 +720,44 @@ def estimate_artifact(
         raise CalibrationEstimationError(
             "calibration episode/round counts must be non-negative"
         )
+    if provenance is not None and not isinstance(provenance, CollectionProvenance):
+        raise CalibrationEstimationError(
+            "provenance must be a CollectionProvenance when supplied, got "
+            f"{type(provenance).__name__}"
+        )
 
-    prior, prior_counts_observed = _estimate_prior(config, prior_counts)
+    uniform_belief = config.variant == NO_BELIEF_VARIANT
+    if uniform_belief and provenance is None:
+        # A no-belief artifact marks its belief metric non-applicable, which the
+        # loader only accepts alongside digest-covered derivation metadata that
+        # explains the variant. Without provenance the artifact could not be
+        # loaded, so fail closed instead of emitting an unloadable table set.
+        raise CalibrationEstimationError(
+            "no_belief estimation requires collection provenance so the "
+            "non-applicable belief metric is self-describing"
+        )
+
+    prior, prior_counts_observed = _estimate_prior(
+        config, prior_counts, uniform=uniform_belief
+    )
     likelihood, pair_count, evidence_count, likelihood_counts = (
-        _estimate_likelihood(config, records)
+        _estimate_likelihood(config, records, uniform=uniform_belief)
     )
     payoff, payoff_cell_count, multiplier_count, payoff_counts = _estimate_payoff(
         config, records
     )
 
-    posterior_calibration = _posterior_calibration(
-        records=records, prior=prior, likelihood=likelihood
-    )
+    if uniform_belief:
+        # A full-policy Brier score is not meaningful no-belief evidence, so it
+        # is explicitly marked non-applicable instead of being presented as a
+        # calibrated belief score.
+        posterior_calibration = 0.0
+        posterior_applicable = False
+    else:
+        posterior_calibration = _posterior_calibration(
+            records=records, prior=prior, likelihood=likelihood
+        )
+        posterior_applicable = True
 
     empirical_counts = prior_counts_observed + likelihood_counts + payoff_counts
     if not empirical_counts:
@@ -634,6 +790,7 @@ def estimate_artifact(
         likelihood=float(likelihood_coverage),
         payoff=float(payoff_coverage),
         posterior_calibration=float(posterior_calibration),
+        posterior_calibration_applicable=bool(posterior_applicable),
     )
 
     likelihood_bytes = canonical_json_bytes(
@@ -643,30 +800,47 @@ def estimate_artifact(
         [row.model_dump(mode="json") for row in payoff]
     )
 
-    provenance = SamplerProvenance(
+    sampler_provenance = SamplerProvenance(
         reference_policy="plain_average",
         p0=float(config.p0),
-        mu_a=tuple(float(value) for value in config.mu_a),
+        # The effective mixture (not the pinned source mixture) is what the
+        # sampler actually scheduled; recording it keeps no-strategic
+        # self-describing and lets the loader bind provenance to the declared
+        # derivation.
+        mu_a=tuple(float(value) for value in config.effective_mu_a),
         placement="uniform_non_isolated",
         max_compromised=int(config.max_compromised),
         smoothing_alpha=float(config.smoothing_alpha),
         design_split="clean_global_heldout",
     )
 
+    derivation = (
+        None
+        if provenance is None
+        else build_derivation(
+            config,
+            provenance,
+            calibration_episodes=int(calibration_episodes),
+            calibration_rounds=int(calibration_rounds),
+        )
+    )
+
     body: dict[str, Any] = {
         "schema": ARTIFACT_SCHEMA,
         "schema_version": ARTIFACT_SCHEMA_VERSION,
-        "provenance": provenance.model_dump(mode="json"),
+        "provenance": sampler_provenance.model_dump(mode="json"),
         "action_space": config.action_space.model_dump(mode="json"),
         "bins": config.bins.model_dump(mode="json"),
         "prior": [cell.model_dump(mode="json") for cell in prior],
         "support": support.model_dump(mode="json"),
         "coverage": coverage.model_dump(mode="json"),
-        # Optional schema-v1 ablation provenance (T01). Always present in the
-        # canonical body (``None`` until T02 populates it) so the aggregate
-        # digest matches a default ``model_dump`` of the parsed manifest, which
-        # emits the defaulted field as JSON null.
-        "derivation": None,
+        # Optional schema-v1 ablation provenance (T01/T02). Always present in
+        # the canonical body so the aggregate digest matches a default
+        # ``model_dump`` of the parsed manifest, which emits the defaulted
+        # field as JSON null when absent.
+        "derivation": None
+        if derivation is None
+        else derivation.model_dump(mode="json"),
         "payloads": {
             LIKELIHOOD_FILENAME: {
                 "size_bytes": len(likelihood_bytes),
@@ -711,6 +885,7 @@ def estimate_calibration(
         prior_counts,
         calibration_episodes=collection.episode_count,
         calibration_rounds=collection.round_count,
+        provenance=collection.provenance,
     )
 
 

@@ -404,11 +404,19 @@ class SupportMetadata(_ArtifactModel):
 
 
 class CoverageMetadata(_ArtifactModel):
-    """Coverage fractions in ``[0, 1]`` for the frozen tables."""
+    """Coverage fractions in ``[0, 1]`` for the frozen tables.
+
+    ``posterior_calibration`` is the bounded ``1 - mean Brier`` belief score.
+    It is only meaningful when the prior/likelihood are actually estimated from
+    observations; uniform-posterior variants set
+    ``posterior_calibration_applicable=False`` so a full-policy Brier score is
+    never presented as meaningful no-belief evidence (D036).
+    """
 
     likelihood: float
     payoff: float
     posterior_calibration: float
+    posterior_calibration_applicable: bool = True
 
 
 class PayloadDigest(_ArtifactModel):
@@ -750,6 +758,12 @@ def _validate_coverage(coverage: CoverageMetadata) -> None:
             cls,
             f"{name} must be in [0, 1]",
         )
+    _check(
+        isinstance(coverage.posterior_calibration_applicable, bool),
+        MANIFEST_FILENAME,
+        cls,
+        "posterior_calibration_applicable must be a boolean",
+    )
 
 
 def _validate_prior(prior: tuple[PriorCell, ...]) -> None:
@@ -986,6 +1000,106 @@ def _validate_payoff_rows(
     return tuple(entries)
 
 
+#: Absolute tolerance for the uniform-posterior ablation consistency checks.
+_UNIFORM_TOLERANCE = 1e-9
+
+
+def _feasible_prior_states(degree: int) -> tuple[tuple[int, ...], ...]:
+    """Return the at-most-one-malicious joint states for ``degree``."""
+
+    states: list[tuple[int, ...]] = [(0,) * degree]
+    for position in range(degree):
+        state = [0] * degree
+        state[position] = 1
+        states.append(tuple(state))
+    return tuple(states)
+
+
+def _validate_no_belief_tables(
+    manifest: ArtifactManifest,
+    likelihood_entries: tuple[
+        tuple[tuple[str, str, int, tuple[int, int, int]], float], ...
+    ],
+) -> None:
+    """Enforce the exact uniform-posterior contract on a no-belief artifact.
+
+    A ``no_belief`` artifact must carry a uniform prior over the *complete*
+    feasible joint-state support per degree and a uniform likelihood over the
+    *complete* evidence support for both local types in every context. A
+    nonuniform prior or an evidence-dependent likelihood contradicts the
+    declared variant and is rejected rather than silently accepted as
+    no-belief evidence (D036).
+    """
+
+    prior_by_degree: dict[int, list[float]] = {}
+    for cell in manifest.prior:
+        prior_by_degree.setdefault(cell.degree, []).append(cell.probability)
+    for degree, probabilities in prior_by_degree.items():
+        _check(
+            len(probabilities) == len(_feasible_prior_states(degree)),
+            MANIFEST_FILENAME,
+            "derivation",
+            f"no-belief prior degree {degree} does not cover the feasible support",
+        )
+        _check(
+            max(probabilities) - min(probabilities) <= _UNIFORM_TOLERANCE,
+            MANIFEST_FILENAME,
+            "derivation",
+            f"no-belief prior degree {degree} is not uniform",
+        )
+
+    cardinality = _evidence_cardinality(manifest)
+    support_size = cardinality[0] * cardinality[1] * cardinality[2]
+    by_context: dict[tuple[str, str, int], list[float]] = {}
+    for (degree_bin, progress, local_type, _evidence), probability in likelihood_entries:
+        by_context.setdefault((degree_bin, progress, local_type), []).append(probability)
+    for context, probabilities in by_context.items():
+        _check(
+            len(probabilities) == support_size,
+            LIKELIHOOD_FILENAME,
+            "derivation",
+            "no-belief likelihood does not cover the full evidence support",
+        )
+        _check(
+            max(probabilities) - min(probabilities) <= _UNIFORM_TOLERANCE,
+            LIKELIHOOD_FILENAME,
+            "derivation",
+            "no-belief likelihood is evidence-dependent",
+        )
+
+
+def _validate_belief_applicability(
+    manifest: ArtifactManifest,
+    likelihood_entries: tuple[
+        tuple[tuple[str, str, int, tuple[int, int, int]], float], ...
+    ],
+) -> None:
+    """Bind the declared variant to the honest belief-metric applicability.
+
+    ``no_belief`` artifacts must mark the Brier-style posterior diagnostic
+    non-applicable and prove the exact uniform-posterior table contract; every
+    other variant (and a legacy artifact with no derivation) must leave it
+    applicable.
+    """
+
+    derivation = manifest.derivation
+    if derivation is not None and derivation.variant == NO_BELIEF_VARIANT:
+        _check(
+            manifest.coverage.posterior_calibration_applicable is False,
+            MANIFEST_FILENAME,
+            "derivation",
+            "no-belief coverage must mark belief calibration non-applicable",
+        )
+        _validate_no_belief_tables(manifest, likelihood_entries)
+    else:
+        _check(
+            manifest.coverage.posterior_calibration_applicable is True,
+            MANIFEST_FILENAME,
+            "derivation",
+            "belief variants must mark posterior calibration applicable",
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Immutable indexed artifact
 # --------------------------------------------------------------------------- #
@@ -1169,6 +1283,8 @@ def load_bayesian_artifact(path: str | os.PathLike[str]) -> BayesianArtifact:
     payoff_entries = _validate_payoff_rows(
         raw_payoff, manifest=manifest, filename=PAYOFF_FILENAME
     )
+
+    _validate_belief_applicability(manifest, likelihood_entries)
 
     _check(
         manifest.support.prior_cells == len(manifest.prior),

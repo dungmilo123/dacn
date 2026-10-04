@@ -428,6 +428,7 @@ def calibrate_from_config(
         prior_counts,
         calibration_episodes=collection.episode_count,
         calibration_rounds=collection.round_count,
+        provenance=collection.provenance,
     )
     return publish_calibration_artifact(
         output,
