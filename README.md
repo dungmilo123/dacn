@@ -22,6 +22,13 @@ uv run dfl evaluate STUDY.yaml --output runs/baseline_study
 # (including the reserved unseen schedule) in one atomic command.
 uv run dfl evaluate HELD_OUT.yaml --output runs/held_out_study
 
+# S05 canonical answer product: run the nine-condition non-IID/Watts-Strogatz
+# matrix, then compile + independently audit its report and figures.
+uv run python -m dfl_sim.robustness_study configs/robustness_mnist.yaml \
+    --output runs/m003-canonical-robustness
+uv run dfl report runs/m003-canonical-robustness --verify-only
+uv run python -m dfl_sim.canonical_audit runs/m003-canonical-robustness
+
 # S05 read-only replay viewer for a completed trace (localhost only).
 uv run dfl view runs/clean --port 8050
 
@@ -583,6 +590,177 @@ of calibration-derivation validity or strategic optimization, or as the
 canonical figure/report product (that is S05). Equal or poor outcomes are
 honest evidence.
 
+## Canonical robustness report (M003/S05)
+
+S05 is the canonical answer product: one fail-closed command chain turns the
+bounded S04 IID headline plus a new non-IID / Watts-Strogatz matrix into a
+digest-bound `canonical-report.json` and five deterministic static SVGs. It is
+production evidence, not a pytest: the report consumes the raw matrix, re-audits
+it independently (including the headline and figure digests), and refuses to
+publish if any digest, coverage or provenance assertion fails.
+
+### Canonical commands
+
+```bash
+# 0. Provision + integrity-check the real MNIST cache (shared with S04).
+uv run python -m dfl_sim.mnist_provision --data-root data
+
+# 1. Run the frozen nine-condition matrix into a fresh output root.
+uv run python -m dfl_sim.robustness_study configs/robustness_mnist.yaml \
+    --output runs/m003-canonical-robustness
+# Manifest-matched resume (reused cells are revalidated, not retrained):
+#   uv run python -m dfl_sim.robustness_study configs/robustness_mnist.yaml \
+#       --output runs/m003-canonical-robustness \
+#       --resume-from runs/m003-canonical-robustness.prior
+
+# 2. Compile the report + figures, or freshly re-audit without mutating.
+uv run dfl report runs/m003-canonical-robustness
+uv run dfl report runs/m003-canonical-robustness --verify-only
+uv run dfl report runs/m003-canonical-robustness --output /tmp/report-copy
+
+# 3. Independent production acceptance audit (deep cache + report re-verify).
+uv run python -m dfl_sim.canonical_audit runs/m003-canonical-robustness \
+    --output runs/m003-canonical-robustness/runtime-audit.json
+
+# 4. Re-verify the separate bounded S04 IID headline.
+uv run python -m dfl_sim.headline_verify runs/m003-mnist-headline
+
+# 5. Replay any report-cited trace in the ordinary viewer (see ROBUSTNESS_REPORT.md).
+uv run dfl view runs/m003-canonical-robustness/conditions/a0p1__low/study/final/traces/held_out/bayesian/seed-2101
+```
+
+The matrix runner emits raw artifacts only; `dfl report` owns compilation and
+`dfl_sim.canonical_audit` owns independent acceptance. `dfl report
+--verify-only` reads and re-hashes without writing; `dfl report` and
+`--output` publish atomically and are idempotent on matching bytes.
+
+### Frozen source protocol and nine-condition dimensions
+
+`configs/robustness_mnist.yaml` is the checked-in source envelope. For
+`data_provenance: real_mnist`, every canonical dimension is cross-checked
+against the frozen T02 constants at load time, so editing the file cannot
+silently weaken the matrix; `calibrate_robustness_mnist.yaml` is the single
+shared calibration template (only the per-alpha data alpha is substituted).
+
+* **Nine conditions** = 3 Dirichlet class-heterogeneity `alphas` (0.1, 0.5,
+  1.0) x 3 seed-derived Watts-Strogatz degree placements (`low`, `mid`,
+  `high`).
+* **Topology**: 10-node Watts-Strogatz, `k=2`, `p=0.3`, 6 rounds, single worker
+  (`threads: 1`, `torch.set_num_threads(1)`, D009), CPU, bitwise small CNN.
+* **Data**: real downloaded MNIST, capacity-constrained class-wise Dirichlet
+  partition (T01); training subset 64 samples/node, evaluation subset 128.
+* **Panel**: 8 policies (`local_only`, `plain_average`, `fixed_similarity`,
+  `trust_weighted`, `balance`, `bayesian`, `bayesian_no_belief`,
+  `bayesian_no_strategic`).
+* **Schedules**: 4 named known schedules (`duty_cycle`, `periodic`,
+  `delayed_onset`, `random`) plus the reserved final-only `held_out` schedule.
+* **Seeds**: selection `[1101, 1102]`, final `[2101, 2102, 2103]`, calibration
+  `20240101` — disjoint, so selection never sees a final seed.
+* **Budget**: `candidate_budget: 1` (a single frozen candidate, not a search).
+
+`alpha` describes how **heterogeneous the local class distributions are** under
+the Dirichlet partition; it is *not* a calibration-smoothing or temperature
+knob. Degree placement selects the compromised node by its realized degree rank
+in the seed-derived graph. Low/mid-degree graphs contain ties, so **degree ranks
+may tie**; the tie is broken deterministically by node id, and for even node
+counts the middle rank is pinned to the lower-middle `(n-1)//2`.
+
+### Output tree
+
+```
+runs/m003-canonical-robustness/
+  robustness-protocol.json      # frozen resolved source protocol + digest
+  generated-configs/calibrate-a*.yaml
+  calibration/<alpha>/{full,no_belief,no_strategic}/...   # matched triples
+  conditions/<alpha>__<placement>/
+    study/{selection,final}/{selection,final}-manifest.json
+    study/{selection,final}/traces/<schedule>/<policy>/seed-<n>/
+    study/{selection,final}/telemetry/<schedule>/<policy>/seed-<n>/
+        {costs.json,decision-audit.jsonl}
+  diagnostics/study-<condition>.json
+  matrix-manifest.json          # raw, independently audited matrix success marker
+  matrix-evidence.json          # re-audited per-cell evidence + digests
+  report/canonical-report.json  # digest-bound canonical report
+  report/figures/*.svg          # five deterministic static figures
+  runtime-audit.json            # optional digest-bound canonical_audit result
+```
+
+Each trace directory is a normal four-file schema-v1 trace; the T03 cost and
+decision-audit sidecars are **siblings** under `telemetry/`, so the strict
+trace layout is never widened. Selection telemetry is recorded but selection
+outcomes are never pooled into final metrics.
+
+### Source roots, replay links and provenance
+
+`robustness-protocol.json` pins the declared `headline_source_root` and
+`data_root`; the output root must not alias, contain, or be contained by either
+source root (or the config), and a collision is a hard error rather than an
+overwrite. Every report-cited `replay_link` (`trace`, `costs`,
+`decision_audit`) is a **relative** path that is resolved and re-verified under
+the verified matrix root at both compile and audit time: absolute paths, `..`
+traversal and symlink escapes are rejected, and a missing or foreign-path
+source fails closed. Provenance is content-bound, not a string: the report and
+`canonical_audit` re-bind the downloaded-cache manifest digest (deep-hashed from
+the raw IDX bytes, `deep_cache_verified=true`), the bounded S04 headline
+evidence digest, the frozen matrix manifest/evidence digests, and a self-
+verifying `report_digest` over the full report body (including figure digests).
+
+### Resume, collision and provisioning recovery
+
+* **Fresh root**: `--output` must identify a non-existent or explicitly
+  manifest-matched root; any pre-existing mismatched protocol, foreign matrix,
+  or aliased source is rejected before a cell runs.
+* **Resume**: `--resume-from` revalidates retained traces against the frozen
+  protocol and only reuses manifest-matched completed cells; a digest mismatch
+  fails closed rather than silently mixing runs.
+* **Cache**: provisioning either downloads and integrity-checks the real cache
+  or fails closed. The matrix runs with `download: false` against the leased,
+  revalidated cache; a missing/corrupt cache, a mismatched artifact, or a
+  failed audit prints a bounded `dfl_sim: error: ...` line and exits nonzero
+  with no success marker. Recovery is a fresh root or a matched `--resume-from`
+  run, never editing an existing success marker.
+
+### Cost boundaries (exact semantics)
+
+Computation is measured at the shared round/evaluation seam with
+`perf_counter_ns` on CPU with `threads: 1`, split into `observation_ns`,
+`policy_ns`, `aggregation_ns`, `selection_ns`, `setup_ns`, `train_ns`,
+`evaluation_ns` and the outer `whole_cell_ns`. Communication is the **logical**
+count: actual directed messages plus the sum of `numel * element_size` over
+every message's state tensors at construction, **before receiver filtering**.
+It is not a physical network-traffic measurement: headers, retransmits and
+network effects are excluded, and `model_payload_bytes` is reported alongside
+the logical total rather than substituted for it. Calibration stage wall time and process RSS
+are reported as `available: false` when the raw evidence does not record them —
+missing telemetry is never rendered as a zero cost.
+
+### Evidence layers (kept separate)
+
+`evidence.derivation` covers data identity (dataset, Dirichlet partition, WS
+topology, cache digest), the per-alpha matched calibration triples, the pinned
+S04 headline, and the explicit artifact assumptions (posterior, pinned payoff
+table, fixed-`kappa` no-strategic). `evidence.solution_quality` covers the
+artifact-backed finite-action audit only: the posterior is recomputed from
+recorded evidence cells, candidates are re-enumerated under the artifact degree
+cap, expected payoffs are recomputed from the pinned table, and the chosen
+action must be the tie-tolerant argmax or the report fails closed; degree-cap
+pruned and self-only fallback rows are counted, not hidden.
+`evidence.defense_usefulness` covers observed final outcomes and paired
+deltas only. Rejection (benign exclusions vs malicious acceptance) and
+propagation (reach, hop and worst-node outcomes) are reported as their own
+blocks. These layers are never collapsed into a single success number.
+
+### Contrast with the bounded S04 IID headline
+
+The S04 headline is an **IID chain3, 3-node** bounded subset (64 selection / 120
+final cells, 40 aggregates) and is the only place `kind: iid_chain3_bounded`
+appears. The S05 matrix is a **non-IID Watts-Strogatz 10-node** study with 576
+selection cells, 1080 final cells, 360 aggregates and 630 paired deltas. The
+report carries the headline as a verified, digest-pinned source point but
+**never pools** it with the matrix conditions. Neither result is a
+strategic-equilibrium, calibration-validity, or physical-bandwidth claim; the
+measured outcomes and limits are stated in `ROBUSTNESS_REPORT.md`.
+
 
 ## Testing
 
@@ -610,7 +788,14 @@ Run just the browser smoke:
 
 ```bash
 DFL_RUN_BROWSER_TESTS=1 uv run pytest -q tests/test_viewer_browser.py --browser chromium
+# Canonical report-linked trace replay (builds its own injected matrix/report offline):
+DFL_RUN_BROWSER_TESTS=1 uv run pytest -q tests/test_canonical_replay_browser.py --browser chromium
 ```
+
+`tests/test_canonical_replay_browser.py` resolves its trace through a compiled
+report's own `replay_links` entry, re-verifies that link stays confined to the
+matrix root, and then drives the real viewer; it never reads downloaded MNIST or
+the repository `runs/` tree.
 
 Run the entire suite including the browser smoke:
 
