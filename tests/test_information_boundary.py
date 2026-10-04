@@ -48,6 +48,7 @@ from dfl_sim import (
     DEFAULT_EPSILON,
     AggregationError,
     AttackConfig,
+    BalanceAggregation,
     BayesianAggregation,
     BayesianArtifact,
     BayesianDiagnostic,
@@ -61,6 +62,7 @@ from dfl_sim import (
     PlainAveragePolicy,
     PolicyError,
     RoundError,
+    TrustWeightedAggregation,
     ValidationReferencePolicy,
     WeightProfile,
     build_bayesian_policy,
@@ -154,6 +156,14 @@ BANNED_NAMES = frozenset(
 
 NODES3 = (0, 1, 2)
 
+#: BALANCE Algorithm 3's exponential decay coefficient is named ``kappa`` in the
+#: cited paper (D028). It is a construction-time local hyperparameter that grants
+#: no access to the D016 attack intensity: ``attack_config``, ``intensity``, and
+#: ``compromised_node`` remain banned, so a real attack-state read is still
+#: caught. The production policy-module check therefore allows the bare
+#: ``kappa`` identifier while the generic checker stays strict.
+POLICY_LOCAL_HYPERPARAMETER_NAMES = frozenset({"kappa"})
+
 
 # --------------------------------------------------------------------------- #
 # Static AST/import contract
@@ -189,8 +199,14 @@ def _boundary_violations(
     forbidden: Sequence[str] = FORBIDDEN_MODULE_PREFIXES,
     banned: frozenset[str] = BANNED_NAMES,
     forbidden_string_keys: frozenset[str] = frozenset(),
+    allowed: frozenset[str] = frozenset(),
 ) -> list[str]:
-    """Return boundary violations in ``source`` (empty when clean)."""
+    """Return boundary violations in ``source`` (empty when clean).
+
+    ``allowed`` names are exempted from the ``banned``/``forbidden_string_keys``
+    checks for callers that deliberately permit a documented local
+    hyperparameter (for example BALANCE's ``kappa``).
+    """
 
     tree = ast.parse(source)
     violations: list[str] = []
@@ -204,13 +220,13 @@ def _boundary_violations(
             if _is_forbidden_module(module, forbidden):
                 violations.append(f"forbidden import {module}")
         elif isinstance(node, ast.Name):
-            if node.id in banned:
+            if node.id in banned and node.id not in allowed:
                 violations.append(f"banned name {node.id}")
         elif isinstance(node, ast.Attribute):
-            if node.attr in banned:
+            if node.attr in banned and node.attr not in allowed:
                 violations.append(f"banned attribute {node.attr}")
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if node.value in forbidden_string_keys:
+            if node.value in forbidden_string_keys and node.value not in allowed:
                 violations.append(f"forbidden string key {node.value!r}")
     return violations
 
@@ -218,7 +234,15 @@ def _boundary_violations(
 def test_production_modules_respect_static_dependency_boundary() -> None:
     for path in PRODUCTION_MODULES:
         source = path.read_text(encoding="utf-8")
-        assert _boundary_violations(source) == [], f"{path.name} leaks privileges"
+        allowed = (
+            POLICY_LOCAL_HYPERPARAMETER_NAMES
+            if path.name == "policy.py"
+            else frozenset()
+        )
+        assert _boundary_violations(source, allowed=allowed) == [], (
+            f"{path.name} leaks privileges: "
+            f"{_boundary_violations(source, allowed=allowed)}"
+        )
 
         tree = ast.parse(source)
         assert _dfl_imports(tree) <= ALLOWED_DFL_IMPORTS, (
@@ -872,6 +896,76 @@ VALIDATION_REFERENCE_REQUIRED_HELPERS = frozenset(
     }
 )
 
+# The D029 trust comparator and the D028 BALANCE reproduction are two more
+# built-in policies over the same narrow runtime seam. Each may reach only the
+# frozen local observation guard, scalar-observation helpers, and the shared
+# finite weight-profile fold -- never evaluator labels, attack config, topology,
+# data, or any calibration/report state.
+TRUST_WEIGHTED_ROOTS = frozenset(
+    {
+        "TrustWeightedPolicy.select_weights",
+        "TrustWeightedPolicy.__post_init__",
+    }
+)
+
+TRUST_WEIGHTED_ALLOWED_HELPERS = frozenset(
+    {
+        "TrustWeightedPolicy.__post_init__",
+        "TrustWeightedPolicy.select_weights",
+        "_normalize_multipliers",
+        "_normalize_participant_ids",
+        "_observation_context",
+        "_require_finite_float",
+        "_require_int",
+        "_require_observation",
+        "_suffix",
+        "build_weight_profile",
+    }
+)
+
+TRUST_WEIGHTED_REQUIRED_HELPERS = frozenset(
+    {
+        "TrustWeightedPolicy.select_weights",
+        "TrustWeightedPolicy.__post_init__",
+        "build_weight_profile",
+        "_require_observation",
+    }
+)
+
+BALANCE_ROOTS = frozenset(
+    {
+        "BalancePolicy.select_weights",
+        "BalancePolicy.__post_init__",
+        "BalancePolicy.threshold",
+    }
+)
+
+BALANCE_ALLOWED_HELPERS = frozenset(
+    {
+        "BalancePolicy.__post_init__",
+        "BalancePolicy.select_weights",
+        "BalancePolicy.threshold",
+        "_normalize_multipliers",
+        "_normalize_participant_ids",
+        "_observation_context",
+        "_require_finite_float",
+        "_require_int",
+        "_require_observation",
+        "_suffix",
+        "build_weight_profile",
+    }
+)
+
+BALANCE_REQUIRED_HELPERS = frozenset(
+    {
+        "BalancePolicy.select_weights",
+        "BalancePolicy.__post_init__",
+        "BalancePolicy.threshold",
+        "build_weight_profile",
+        "_require_observation",
+    }
+)
+
 BAYESIAN_ALLOWED_ARTIFACT_IMPORTS = frozenset(
     {"BayesianArtifact", "interval_bin_index", "load_bayesian_artifact"}
 )
@@ -1048,6 +1142,7 @@ def test_bayesian_policy_online_path_is_bounded_and_privilege_free() -> None:
             forbidden=BAYESIAN_FORBIDDEN_MODULE_PREFIXES,
             banned=BAYESIAN_BANNED_NAMES,
             forbidden_string_keys=BAYESIAN_FORBIDDEN_STRING_KEYS,
+            allowed=POLICY_LOCAL_HYPERPARAMETER_NAMES,
         )
         == []
     )
@@ -1112,6 +1207,73 @@ def test_validation_reference_boundary_checker_detects_planted_leak() -> None:
     assert any("evaluator_labels" in v for v in violations)
     assert any("attack_config" in v for v in violations)
     assert any("kappa" in v for v in violations)
+
+
+def test_trust_weighted_policy_reaches_only_local_seam_helpers() -> None:
+    source = POLICY_MODULE.read_text(encoding="utf-8")
+    reachable, _ = _reachable_definitions(source, sorted(TRUST_WEIGHTED_ROOTS))
+    assert reachable <= TRUST_WEIGHTED_ALLOWED_HELPERS, (
+        "trust weighted reached un-approved helpers: "
+        f"{sorted(reachable - TRUST_WEIGHTED_ALLOWED_HELPERS)}"
+    )
+    assert TRUST_WEIGHTED_REQUIRED_HELPERS <= reachable, (
+        "trust weighted lost required helpers: "
+        f"{sorted(TRUST_WEIGHTED_REQUIRED_HELPERS - reachable)}"
+    )
+
+
+def test_balance_policy_reaches_only_local_seam_helpers() -> None:
+    source = POLICY_MODULE.read_text(encoding="utf-8")
+    reachable, _ = _reachable_definitions(source, sorted(BALANCE_ROOTS))
+    assert reachable <= BALANCE_ALLOWED_HELPERS, (
+        "balance reached un-approved helpers: "
+        f"{sorted(reachable - BALANCE_ALLOWED_HELPERS)}"
+    )
+    assert BALANCE_REQUIRED_HELPERS <= reachable, (
+        "balance lost required helpers: "
+        f"{sorted(BALANCE_REQUIRED_HELPERS - reachable)}"
+    )
+
+
+def test_policy_kappa_exemption_does_not_hide_attack_state_reads() -> None:
+    # The documented ``kappa`` exemption covers only the local BALANCE decay
+    # hyperparameter; a real attack-intensity read still fails closed because
+    # ``attack_config`` remains banned.
+    source = textwrap.dedent(
+        """
+        class BalancePolicy:
+            def select_weights(self, observation):
+                kappa = observation.attack_config.kappa
+                return kappa
+        """
+    )
+    violations = _boundary_violations(
+        source,
+        banned=BAYESIAN_BANNED_NAMES,
+        forbidden_string_keys=BAYESIAN_FORBIDDEN_STRING_KEYS,
+        allowed=POLICY_LOCAL_HYPERPARAMETER_NAMES,
+    )
+    assert any("attack_config" in v for v in violations)
+
+
+def test_trust_and_balance_policies_accept_only_scalar_local_observation() -> None:
+    policies = (
+        build_policy(TrustWeightedAggregation(beta=1.0)),
+        build_policy(BalanceAggregation(), total_rounds=2),
+    )
+    observation = _fixture_observation(neighbors=(_fixture_neighbor(1),))
+    assert _schema_violations(observation) == []
+    assert _forbidden_reachable(observation) == []
+
+    for policy in policies:
+        signature = inspect.signature(type(policy).select_weights)
+        assert list(signature.parameters) == ["self", "observation"]
+        profile = policy.select_weights(observation)
+        assert isinstance(profile, WeightProfile)
+        assert _forbidden_reachable(profile) == []
+        for bad in (torch.zeros(2), {"w": torch.zeros(2)}, None, "obs"):
+            with pytest.raises(PolicyError):
+                policy.select_weights(bad)  # type: ignore[arg-type]
 
 
 def test_online_modules_cannot_import_or_reach_calibration_symbols() -> None:

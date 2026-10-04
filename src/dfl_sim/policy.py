@@ -57,16 +57,19 @@ from .bayesian_artifact import (
 )
 from .config import (
     AggregationConfig,
+    BalanceAggregation,
     BayesianAggregation,
     FixedSimilarityAggregation,
     LocalOnlyAggregation,
     PlainAverageAggregation,
+    TrustWeightedAggregation,
     ValidationReferenceAggregation,
 )
 from .observation import LocalObservation
 
 __all__ = [
     "AggregationPolicy",
+    "BalancePolicy",
     "BayesianDiagnostic",
     "BayesianPolicy",
     "FALLBACK_CONTEXT_UNAVAILABLE",
@@ -80,6 +83,7 @@ __all__ = [
     "PlainAveragePolicy",
     "PolicyError",
     "PosteriorEntry",
+    "TrustWeightedPolicy",
     "ValidationReferencePolicy",
     "WeightProfile",
     "build_bayesian_policy",
@@ -515,6 +519,120 @@ class ValidationReferencePolicy:
             obs.participant_ids,
             multipliers,
             context=f"ValidationReferencePolicy {_observation_context(obs)}",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TrustWeightedPolicy:
+    """D029 local validation-loss trust comparator over the shared seam.
+
+    The local model keeps multiplier ``1`` and each delivered neighbor ``j`` is
+    scaled by ``exp(-beta * max(loss_delta_j, 0))``. An improving or equal
+    neighbor (``loss_delta <= 0``) therefore stays at multiplier ``1`` (equal to
+    plain averaging), while a strictly worse neighbor is continuously
+    downweighted toward, but never reaching, ``0``. ``beta`` is a strict
+    positive finite rate validated once at construction; an empty neighborhood
+    resolves to exact self-only weights. Every emitted multiplier is folded
+    through :func:`build_weight_profile`, so the participant alignment and
+    unit-sum invariants are centralized and the local-information boundary is
+    unchanged (only the frozen scalar observation is read).
+    """
+
+    beta: float = 1.0
+
+    def __post_init__(self) -> None:
+        beta = _require_finite_float(self.beta, label="beta")
+        if beta <= 0.0:
+            raise PolicyError(f"beta must be positive, got {beta!r}")
+        object.__setattr__(self, "beta", beta)
+
+    def select_weights(self, observation: LocalObservation) -> WeightProfile:
+        obs = _require_observation(
+            observation, policy_name="TrustWeightedPolicy"
+        )
+        multipliers = (1.0,) + tuple(
+            math.exp(-self.beta * max(neighbor.loss_delta, 0.0))
+            for neighbor in obs.neighbors
+        )
+        return build_weight_profile(
+            obs.participant_ids,
+            multipliers,
+            context=f"TrustWeightedPolicy {_observation_context(obs)}",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BalancePolicy:
+    """D028 faithful BALANCE aggregation (Fang et al., ACM CCS 2024 Algorithm 3).
+
+    A delivered neighbor ``j`` is accepted exactly when its scalar
+    ``relative_norm_j <= gamma * exp(-kappa * round_index / total_rounds)``;
+    the threshold is inclusive and decays geometrically over the fixed episode
+    length. The accepted set is then mixed with exact self weight ``alpha`` and
+    uniform ``(1 - alpha) / accepted_count`` neighbor weights, encoded as
+    multipliers through :func:`build_weight_profile` so the returned weights are
+    normalized and participant-aligned. An empty or all-rejected neighborhood
+    resolves to exact self-only weights ``(1.0, 0.0, ...)`` -- the BALANCE
+    fallback -- regardless of ``alpha``.
+
+    ``total_rounds`` is the validated episode round count fixed at construction
+    (the same D023 pattern as :class:`BayesianPolicy`), so ``LocalObservation``
+    stays unchanged. ``alpha`` in ``(0, 1)``, ``gamma > 0``, and ``kappa >= 0``
+    are strict finite values validated once; a malformed or impossible input
+    fails closed before any round.
+    """
+
+    total_rounds: int
+    alpha: float = 0.5
+    gamma: float = 0.3
+    kappa: float = 1.0
+
+    def __post_init__(self) -> None:
+        rounds = _require_int(self.total_rounds, label="total_rounds")
+        if rounds < 1:
+            raise PolicyError(
+                f"total_rounds must be >= 1, got {rounds!r}"
+            )
+        alpha = _require_finite_float(self.alpha, label="alpha")
+        if not 0.0 < alpha < 1.0:
+            raise PolicyError(f"alpha must be in (0, 1), got {alpha!r}")
+        gamma = _require_finite_float(self.gamma, label="gamma")
+        if gamma <= 0.0:
+            raise PolicyError(f"gamma must be positive, got {gamma!r}")
+        decay = _require_finite_float(self.kappa, label="kappa")
+        if decay < 0.0:
+            raise PolicyError(f"kappa must be non-negative, got {decay!r}")
+        object.__setattr__(self, "total_rounds", rounds)
+        object.__setattr__(self, "alpha", alpha)
+        object.__setattr__(self, "gamma", gamma)
+        object.__setattr__(self, "kappa", decay)
+
+    def threshold(self, round_index: int) -> float:
+        """Return the BALANCE acceptance threshold at ``round_index`` (D028)."""
+
+        return self.gamma * math.exp(
+            -self.kappa * round_index / self.total_rounds
+        )
+
+    def select_weights(self, observation: LocalObservation) -> WeightProfile:
+        obs = _require_observation(observation, policy_name="BalancePolicy")
+        threshold = self.threshold(obs.round_index)
+        accepted = [
+            neighbor.relative_norm <= threshold
+            for neighbor in obs.neighbors
+        ]
+        count = sum(1 for keep in accepted if keep)
+        if count == 0:
+            multipliers = (1.0,) + (0.0,) * obs.degree
+        else:
+            neighbor_multiplier = (1.0 - self.alpha) / (self.alpha * count)
+            multipliers = (1.0,) + tuple(
+                neighbor_multiplier if keep else 0.0 for keep in accepted
+            )
+        return build_weight_profile(
+            obs.participant_ids,
+            multipliers,
+            context=f"BalancePolicy {_observation_context(obs)}",
         )
 
 
@@ -1268,13 +1386,18 @@ def build_policy(
     and reuses it for every node and round, mirroring the fixed attacker
     controller. Unknown or malformed selectors fail closed before any round.
 
-    The three M001 baselines take no additional context. The Bayesian selector
-    additionally requires the validated ``total_rounds`` fixed at episode
-    construction (D023): it loads and validates the configured artifact exactly
-    once, cross-checks the config's pinned action-space provenance against the
-    artifact, and returns the immutable :class:`BayesianPolicy`. ``diagnostic_sink``
-    is an optional construction-time hook forwarded only to the Bayesian policy;
-    baseline policies ignore it and ordinary callers remain unchanged.
+    The three M001 baselines take no additional context. The D026 validation
+    reference, D029 trust comparator, and D028 BALANCE selector likewise select
+    from the frozen scalar observation; BALANCE additionally requires the
+    validated ``total_rounds`` fixed at episode construction (the same D023
+    pattern as the Bayesian selector) so its round-progress decay is
+    well-defined. The Bayesian selector also requires the validated
+    ``total_rounds`` (D023): it loads and validates the configured artifact
+    exactly once, cross-checks the config's pinned action-space provenance
+    against the artifact, and returns the immutable :class:`BayesianPolicy`.
+    ``diagnostic_sink`` is an optional construction-time hook forwarded only to
+    the Bayesian policy; baseline policies ignore it and ordinary callers
+    remain unchanged.
     """
 
     if isinstance(config, LocalOnlyAggregation):
@@ -1288,6 +1411,20 @@ def build_policy(
         )
     if isinstance(config, ValidationReferenceAggregation):
         return ValidationReferencePolicy(tolerance=float(config.tolerance))
+    if isinstance(config, TrustWeightedAggregation):
+        return TrustWeightedPolicy(beta=float(config.beta))
+    if isinstance(config, BalanceAggregation):
+        if total_rounds is None:
+            raise PolicyError(
+                "balance aggregation requires the validated total_rounds at "
+                "construction (D028)"
+            )
+        return BalancePolicy(
+            total_rounds=total_rounds,
+            alpha=float(config.alpha),
+            gamma=float(config.gamma),
+            kappa=float(config.kappa),
+        )
     if isinstance(config, BayesianAggregation):
         return _build_bayesian_from_config(
             config, total_rounds, diagnostic_sink=diagnostic_sink

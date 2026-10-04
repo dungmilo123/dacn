@@ -29,6 +29,9 @@ from pydantic import (
 
 __all__ = [
     "ATTACK_KAPPAS",
+    "BALANCE_ALPHA",
+    "BALANCE_GAMMA",
+    "BALANCE_KAPPA",
     "MAX_BATCH_SIZE",
     "MAX_EVAL_BATCH_SIZE",
     "MAX_EVAL_SAMPLES",
@@ -45,6 +48,7 @@ __all__ = [
     "BAYESIAN_DEGREE_CAP",
     "BAYESIAN_OMEGA",
     "BAYESIAN_TIE_TOLERANCE",
+    "BalanceAggregation",
     "BayesianAggregation",
     "Chain3Topology",
     "ConfigError",
@@ -59,6 +63,7 @@ __all__ = [
     "TopologyConfig",
     "TraceConfig",
     "TrainingConfig",
+    "TrustWeightedAggregation",
     "ValidationReferenceAggregation",
     "WattsStrogatzTopology",
     "canonical_dump",
@@ -101,6 +106,14 @@ ATTACK_KAPPAS: dict[str, float] = {"zero": 0.0, "weak": 2.0, "strong": 5.0}
 BAYESIAN_OMEGA = 0.5
 BAYESIAN_DEGREE_CAP = 4
 BAYESIAN_TIE_TOLERANCE = 1e-9
+
+#: D028 faithful BALANCE defaults (Fang et al., Byzantine-Robust Decentralized
+#: Federated Learning, ACM CCS 2024, arXiv:2406.10416v4, Algorithm 3). ``alpha``
+#: is the self mixing weight, ``gamma`` the initial acceptance scale, and
+#: ``kappa`` the exponential decay rate over round progress.
+BALANCE_ALPHA = 0.5
+BALANCE_GAMMA = 0.3
+BALANCE_KAPPA = 1.0
 
 #: Maximum length of the configured artifact directory path string.
 MAX_ARTIFACT_DIR_LEN = 1024
@@ -300,6 +313,41 @@ class ValidationReferenceAggregation(_StrictModel):
     tolerance: float = Field(ge=0.0, allow_inf_nan=False)
 
 
+class TrustWeightedAggregation(_StrictModel):
+    """D029 local validation-loss trust-weighting selector.
+
+    The trust comparator keeps the local model at multiplier ``1`` and scales
+    each delivered neighbor by ``exp(-beta * max(loss_delta, 0))``: improving
+    or equal neighbors stay at ``1`` while strictly worse neighbors are
+    continuously downweighted. ``beta`` is the strict positive, finite decay
+    rate; a malformed value fails validation before any round.
+    """
+
+    kind: Literal["trust_weighted"] = "trust_weighted"
+    beta: float = Field(gt=0.0, allow_inf_nan=False)
+
+
+class BalanceAggregation(_StrictModel):
+    """D028 faithful BALANCE selector (Fang et al., ACM CCS 2024, Algorithm 3.
+
+    A neighbor is accepted when its scalar ``relative_norm`` is at most the
+    decaying threshold ``gamma * exp(-kappa * round_index / total_rounds)``,
+    then the profile mixes exact self weight ``alpha`` with uniform
+    ``(1 - alpha) / accepted_count`` neighbor weights. An empty or
+    all-rejected neighborhood resolves to exact self-only weights.
+
+    ``total_rounds`` is not part of the aggregation selector: it is the
+    validated episode round count supplied once at policy construction, like
+    the Bayesian selector (D023/D028), so ``LocalObservation`` stays unchanged.
+    Defaults are the D028 pinned values ``alpha=0.5``, ``gamma=0.3``, ``kappa=1``.
+    """
+
+    kind: Literal["balance"] = "balance"
+    alpha: float = Field(default=BALANCE_ALPHA, gt=0.0, lt=1.0, allow_inf_nan=False)
+    gamma: float = Field(default=BALANCE_GAMMA, gt=0.0, allow_inf_nan=False)
+    kappa: float = Field(default=BALANCE_KAPPA, ge=0.0, allow_inf_nan=False)
+
+
 class BayesianAggregation(_StrictModel):
     """Artifact-backed exact Bayesian best response selector (R013/R015/R016).
 
@@ -354,6 +402,8 @@ AggregationConfig = Annotated[
         PlainAverageAggregation,
         FixedSimilarityAggregation,
         ValidationReferenceAggregation,
+        TrustWeightedAggregation,
+        BalanceAggregation,
         BayesianAggregation,
     ],
     Field(discriminator="kind"),

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import shutil
 import types
 from pathlib import Path
@@ -29,13 +30,18 @@ import pytest
 import torch
 
 from dfl_sim import (
+    BalanceAggregation,
     BayesianAggregation,
     BayesianArtifactError,
     BayesianPolicy,
+    ConfigError,
     LocalOnlyAggregation,
     PlainAverageAggregation,
+    TrustWeightedAggregation,
     ValidationReferenceAggregation,
+    canonical_dump,
     build_policy,
+    parse_config_text,
 )
 from dfl_sim.aggregation import (
     AggregationError,
@@ -50,14 +56,18 @@ from dfl_sim.observation import (
 )
 from dfl_sim.policy import (
     AggregationPolicy,
+    BalancePolicy,
     FixedSimilarityFilterPolicy,
     LocalOnlyPolicy,
     PlainAveragePolicy,
     PolicyError,
+    TrustWeightedPolicy,
     ValidationReferencePolicy,
     WeightProfile,
     build_weight_profile,
 )
+
+from helpers import make_config
 
 from dfl_sim.bayesian_artifact import (
     canonical_json_bytes,
@@ -743,3 +753,406 @@ def test_baselines_ignore_optional_total_rounds() -> None:
     assert isinstance(
         build_policy(PlainAverageAggregation(), total_rounds=3), PlainAveragePolicy
     )
+
+
+# --------------------------------------------------------------------------- #
+# Trust-weighted comparator (D029)
+# --------------------------------------------------------------------------- #
+def test_trust_weighted_equal_and_improving_neighbors_keep_full_multiplier() -> None:
+    obs = _obs(
+        node_id=7,
+        neighbors=(
+            _neighbor(2, loss_delta=-0.5),  # strictly better -> 1
+            _neighbor(5, loss_delta=0.0),  # equal -> 1
+        ),
+    )
+    profile = TrustWeightedPolicy(beta=2.0).select_weights(obs)
+    _assert_valid_profile(profile, (7, 2, 5))
+    assert profile.multipliers == pytest.approx((1.0, 1.0, 1.0), abs=_TOL)
+    assert profile.weights == pytest.approx((1 / 3, 1 / 3, 1 / 3), abs=_TOL)
+
+
+def test_trust_weighted_continuously_downweights_worse_neighbors() -> None:
+    beta = 1.5
+    obs = _obs(
+        node_id=7,
+        neighbors=(
+            _neighbor(2, loss_delta=0.5),
+            _neighbor(5, loss_delta=1.5),
+        ),
+    )
+    profile = TrustWeightedPolicy(beta=beta).select_weights(obs)
+    expected = (1.0, math.exp(-beta * 0.5), math.exp(-beta * 1.5))
+    assert profile.multipliers == pytest.approx(expected, abs=_TOL)
+    # Strictly monotone: a worse neighbor is downweighted harder but never to 0.
+    assert profile.weights[1] > profile.weights[2] > 0.0
+
+
+def test_trust_weighted_exact_equation() -> None:
+    beta = 4.0
+    obs = _obs(node_id=7, neighbors=(_neighbor(2, loss_delta=0.25),))
+    profile = TrustWeightedPolicy(beta=beta).select_weights(obs)
+    neighbor = math.exp(-beta * 0.25)
+    total = 1.0 + neighbor
+    assert profile.multipliers == pytest.approx((1.0, neighbor), abs=_TOL)
+    assert profile.weights == pytest.approx(
+        (1.0 / total, neighbor / total), abs=_TOL
+    )
+
+
+def test_trust_weighted_larger_beta_sharpens_downweighting() -> None:
+    obs = _obs(node_id=7, neighbors=(_neighbor(2, loss_delta=1.0),))
+    weak = TrustWeightedPolicy(beta=0.25).select_weights(obs)
+    strong = TrustWeightedPolicy(beta=3.0).select_weights(obs)
+    assert weak.weights[1] > strong.weights[1]
+
+
+def test_trust_weighted_empty_neighborhood_is_self_only() -> None:
+    profile = TrustWeightedPolicy(beta=1.0).select_weights(_obs(node_id=9))
+    _assert_valid_profile(profile, (9,))
+    assert profile.multipliers == (1.0,)
+    assert profile.weights == (1.0,)
+
+
+def test_trust_weighted_preserves_participant_alignment() -> None:
+    obs = _obs(
+        node_id=1,
+        neighbors=(_neighbor(0, loss_delta=0.0), _neighbor(2, loss_delta=1.0)),
+    )
+    profile = TrustWeightedPolicy(beta=1.0).select_weights(obs)
+    assert profile.participant_ids == (1, 0, 2)
+    assert profile.multipliers[0] == 1.0
+    assert profile.multipliers[1] == pytest.approx(1.0, abs=_TOL)
+    assert profile.multipliers[2] == pytest.approx(math.exp(-1.0), abs=_TOL)
+
+
+def test_trust_weighted_selection_is_deterministic() -> None:
+    obs = _obs(
+        node_id=7,
+        neighbors=(_neighbor(2, loss_delta=0.5), _neighbor(5, loss_delta=-0.5)),
+    )
+    policy = TrustWeightedPolicy(beta=1.0)
+    assert policy.select_weights(obs) == policy.select_weights(obs)
+
+
+@pytest.mark.parametrize(
+    "beta",
+    [0.0, -0.1, float("nan"), float("inf"), float("-inf"), "1.0", True],
+)
+def test_trust_weighted_rejects_invalid_beta(beta) -> None:
+    with pytest.raises(PolicyError):
+        TrustWeightedPolicy(beta=beta)
+
+
+def test_trust_weighted_rejects_non_observation_arguments() -> None:
+    policy = TrustWeightedPolicy(beta=1.0)
+    for bad in (object(), None, "not-an-observation", torch.zeros(2)):
+        with pytest.raises(PolicyError):
+            policy.select_weights(bad)  # type: ignore[arg-type]
+
+
+def test_trust_weighted_rejects_duck_typed_observation() -> None:
+    duck = types.SimpleNamespace(
+        node_id=1,
+        round_index=0,
+        epsilon=DEFAULT_EPSILON,
+        neighbors=(_neighbor(2),),
+        ground_truth="benign",
+    )
+    with pytest.raises(PolicyError):
+        TrustWeightedPolicy(beta=1.0).select_weights(duck)
+
+
+# --------------------------------------------------------------------------- #
+# Faithful BALANCE comparator (D028)
+# --------------------------------------------------------------------------- #
+def _balance(**overrides) -> BalancePolicy:
+    params = {"total_rounds": 2, "alpha": 0.5, "gamma": 0.3, "kappa": 1.0}
+    params.update(overrides)
+    return BalancePolicy(**params)
+
+
+def test_balance_threshold_matches_cited_equation() -> None:
+    policy = _balance(total_rounds=4, gamma=0.5, kappa=1.0)
+    for round_index in range(4):
+        expected = 0.5 * math.exp(-1.0 * round_index / 4)
+        assert policy.threshold(round_index) == pytest.approx(expected, abs=_TOL)
+
+
+def test_balance_threshold_decays_with_round_progress() -> None:
+    policy = _balance(total_rounds=5, gamma=0.6, kappa=1.0)
+    thresholds = [policy.threshold(index) for index in range(5)]
+    assert thresholds == sorted(thresholds, reverse=True)
+    assert thresholds[0] > thresholds[-1]
+
+
+def test_balance_threshold_boundary_is_inclusive() -> None:
+    policy = _balance(total_rounds=2, gamma=0.3, kappa=1.0)
+    cutoff = policy.threshold(0)
+    accepted = _obs(
+        node_id=7, round_index=0, neighbors=(_neighbor(2, relative_norm=cutoff),)
+    )
+    rejected = _obs(
+        node_id=7,
+        round_index=0,
+        neighbors=(_neighbor(2, relative_norm=cutoff + 1e-9),),
+    )
+    assert policy.select_weights(accepted).multipliers == (1.0, 1.0)
+    assert policy.select_weights(rejected).weights == (1.0, 0.0)
+
+
+def test_balance_alpha_mixing_is_exact() -> None:
+    alpha = 0.3
+    policy = _balance(total_rounds=2, alpha=alpha, gamma=1.0, kappa=0.0)
+    obs = _obs(
+        node_id=7,
+        neighbors=(
+            _neighbor(2, relative_norm=0.0),
+            _neighbor(5, relative_norm=0.0),
+        ),
+    )
+    profile = policy.select_weights(obs)
+    _assert_valid_profile(profile, (7, 2, 5))
+    assert profile.weights[0] == pytest.approx(alpha, abs=1e-9)
+    assert profile.weights[1] == pytest.approx((1 - alpha) / 2, abs=1e-9)
+    assert profile.weights[2] == pytest.approx((1 - alpha) / 2, abs=1e-9)
+
+
+def test_balance_partial_acceptance_keeps_uniform_neighbors() -> None:
+    alpha = 0.25
+    policy = _balance(total_rounds=2, alpha=alpha, gamma=1.0, kappa=0.0)
+    obs = _obs(
+        node_id=7,
+        neighbors=(
+            _neighbor(2, relative_norm=0.5),
+            _neighbor(5, relative_norm=1.5),
+        ),
+    )
+    profile = policy.select_weights(obs)
+    _assert_valid_profile(profile, (7, 2, 5))
+    assert profile.weights[0] == pytest.approx(alpha, abs=1e-9)
+    assert profile.weights[1] == pytest.approx(1 - alpha, abs=1e-9)
+    assert profile.weights[2] == 0.0
+
+
+def test_balance_empty_and_all_rejected_are_exactly_self_only() -> None:
+    policy = _balance(total_rounds=2, gamma=0.1, kappa=1.0)
+    all_rejected = _obs(
+        node_id=7,
+        neighbors=(
+            _neighbor(2, relative_norm=1.0),
+            _neighbor(5, relative_norm=2.0),
+        ),
+    )
+    profile = policy.select_weights(all_rejected)
+    _assert_valid_profile(profile, (7, 2, 5))
+    assert profile.weights == (1.0, 0.0, 0.0)
+    empty = policy.select_weights(_obs(node_id=9))
+    assert empty.weights == (1.0,)
+
+
+def test_balance_decay_admits_more_at_round_zero() -> None:
+    policy = _balance(total_rounds=2, gamma=0.4, kappa=1.0)
+    cutoff0 = policy.threshold(0)
+    cutoff1 = policy.threshold(1)
+    assert cutoff0 > cutoff1
+    midpoint = (cutoff0 + cutoff1) / 2
+    early = policy.select_weights(
+        _obs(
+            node_id=7,
+            round_index=0,
+            neighbors=(_neighbor(2, relative_norm=midpoint),),
+        )
+    )
+    late = policy.select_weights(
+        _obs(
+            node_id=7,
+            round_index=1,
+            neighbors=(_neighbor(2, relative_norm=midpoint),),
+        )
+    )
+    assert early.multipliers == (1.0, 1.0)
+    assert late.weights == (1.0, 0.0)
+
+
+def test_balance_preserves_participant_alignment() -> None:
+    policy = _balance(total_rounds=2, gamma=1.0, kappa=0.0)
+    obs = _obs(
+        node_id=1,
+        neighbors=(
+            _neighbor(0, relative_norm=0.0),
+            _neighbor(2, relative_norm=2.0),
+        ),
+    )
+    profile = policy.select_weights(obs)
+    assert profile.participant_ids == (1, 0, 2)
+    assert profile.multipliers == pytest.approx((1.0, 1.0, 0.0), abs=_TOL)
+    assert profile.weights == pytest.approx((0.5, 0.5, 0.0), abs=_TOL)
+
+
+def test_balance_selection_is_deterministic() -> None:
+    policy = _balance()
+    obs = _obs(
+        node_id=7,
+        neighbors=(_neighbor(2, relative_norm=0.1), _neighbor(5, relative_norm=0.9)),
+    )
+    assert policy.select_weights(obs) == policy.select_weights(obs)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"total_rounds": 0},
+        {"total_rounds": -1},
+        {"total_rounds": True},
+        {"total_rounds": 2.0},
+        {"total_rounds": 2, "alpha": 0.0},
+        {"total_rounds": 2, "alpha": 1.0},
+        {"total_rounds": 2, "alpha": float("nan")},
+        {"total_rounds": 2, "alpha": float("inf")},
+        {"total_rounds": 2, "alpha": True},
+        {"total_rounds": 2, "gamma": 0.0},
+        {"total_rounds": 2, "gamma": -0.1},
+        {"total_rounds": 2, "gamma": float("inf")},
+        {"total_rounds": 2, "kappa": -0.1},
+        {"total_rounds": 2, "kappa": float("nan")},
+    ],
+)
+def test_balance_rejects_invalid_inputs(kwargs) -> None:
+    with pytest.raises(PolicyError):
+        BalancePolicy(**kwargs)
+
+
+def test_balance_rejects_non_observation_arguments() -> None:
+    policy = _balance()
+    for bad in (object(), None, "not-an-observation", torch.zeros(2)):
+        with pytest.raises(PolicyError):
+            policy.select_weights(bad)  # type: ignore[arg-type]
+
+
+def test_balance_rejects_duck_typed_observation() -> None:
+    duck = types.SimpleNamespace(
+        node_id=1,
+        round_index=0,
+        epsilon=DEFAULT_EPSILON,
+        neighbors=(_neighbor(2),),
+        ground_truth="benign",
+    )
+    with pytest.raises(PolicyError):
+        _balance().select_weights(duck)
+
+
+# --------------------------------------------------------------------------- #
+# Factory wiring + config round-trip for the new baselines
+# --------------------------------------------------------------------------- #
+def test_trust_weighted_builds_through_production_factory() -> None:
+    policy = build_policy(
+        TrustWeightedAggregation(kind="trust_weighted", beta=0.75)
+    )
+    assert isinstance(policy, TrustWeightedPolicy)
+    assert policy.beta == 0.75
+    # The factory ignores the optional run-length context for parameter-free
+    # construction paths.
+    assert isinstance(
+        build_policy(TrustWeightedAggregation(beta=0.75), total_rounds=3),
+        TrustWeightedPolicy,
+    )
+
+
+def test_balance_builds_through_production_factory_with_context() -> None:
+    policy = build_policy(BalanceAggregation(kind="balance"), total_rounds=4)
+    assert isinstance(policy, BalancePolicy)
+    assert policy.total_rounds == 4
+    assert (policy.alpha, policy.gamma, policy.kappa) == (0.5, 0.3, 1.0)
+    custom = build_policy(
+        BalanceAggregation(kind="balance", alpha=0.25, gamma=0.4, kappa=0.5),
+        total_rounds=3,
+    )
+    assert (custom.alpha, custom.gamma, custom.kappa) == (0.25, 0.4, 0.5)
+
+
+def test_balance_factory_requires_total_rounds() -> None:
+    with pytest.raises(PolicyError, match="total_rounds"):
+        build_policy(BalanceAggregation())
+
+
+def test_new_policies_satisfy_runtime_checkable_protocol() -> None:
+    policies = (TrustWeightedPolicy(beta=1.0), BalancePolicy(total_rounds=2))
+    for policy in policies:
+        assert isinstance(policy, AggregationPolicy)
+
+
+def test_new_policies_are_immutable() -> None:
+    trust = TrustWeightedPolicy(beta=1.0)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        trust.beta = 2.0  # type: ignore[misc]
+    balance = BalancePolicy(total_rounds=2)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        balance.alpha = 0.1  # type: ignore[misc]
+
+
+def test_new_aggregation_configs_round_trip_canonically() -> None:
+    trust = make_config(aggregation={"kind": "trust_weighted", "beta": 0.5})
+    assert isinstance(trust.aggregation, TrustWeightedAggregation)
+    assert trust.aggregation.beta == 0.5
+    assert canonical_dump(trust) == canonical_dump(
+        parse_config_text(canonical_dump(trust))
+    )
+
+    balance = make_config(
+        aggregation={
+            "kind": "balance",
+            "alpha": 0.4,
+            "gamma": 0.2,
+            "kappa": 0.5,
+        }
+    )
+    assert isinstance(balance.aggregation, BalanceAggregation)
+    assert balance.aggregation.alpha == 0.4
+    assert canonical_dump(balance) == canonical_dump(
+        parse_config_text(canonical_dump(balance))
+    )
+
+
+@pytest.mark.parametrize(
+    "aggregation",
+    [
+        {"kind": "trust_weighted", "beta": 0.0},
+        {"kind": "trust_weighted", "beta": float("nan")},
+        {"kind": "trust_weighted", "beta": float("inf")},
+        {"kind": "trust_weighted", "beta": True},
+        {"kind": "trust_weighted", "beta": 1.0, "extra": 1},
+        {"kind": "trust_weighted"},
+        {"kind": "balance", "alpha": 0.0},
+        {"kind": "balance", "alpha": 1.0},
+        {"kind": "balance", "alpha": float("nan")},
+        {"kind": "balance", "gamma": 0.0},
+        {"kind": "balance", "gamma": float("inf")},
+        {"kind": "balance", "kappa": -0.5},
+        {"kind": "balance", "kappa": float("nan")},
+        {"kind": "balance", "unknown": 1},
+    ],
+)
+def test_new_aggregation_configs_reject_malformed(aggregation) -> None:
+    with pytest.raises(ConfigError):
+        make_config(aggregation=aggregation)
+
+
+def test_new_policies_scale_as_single_degree_pass() -> None:
+    # Q6 load profile: O(degree) time and output, no joint-action enumeration.
+    degree = 64
+    neighbors = tuple(
+        _neighbor(
+            sender,
+            loss_delta=0.1 * (sender % 3),
+            relative_norm=0.01 * (sender % 5),
+        )
+        for sender in range(1, degree + 1)
+    )
+    obs = _obs(node_id=0, neighbors=neighbors)
+    trust = TrustWeightedPolicy(beta=1.0).select_weights(obs)
+    assert trust.participant_ids == (0, *range(1, degree + 1))
+    assert len(trust.weights) == degree + 1
+    balance = _balance(total_rounds=2, gamma=1.0, kappa=0.0).select_weights(obs)
+    assert balance.participant_ids == (0, *range(1, degree + 1))
+    assert len(balance.weights) == degree + 1
