@@ -45,6 +45,14 @@ from typing import Union
 from torch.utils.data import Dataset
 
 from .attacker import AdaptiveAttackController, OutgoingController
+from .ablation_evaluation import (
+    ABLATION_METADATA_KEY,
+    AblationEvaluationError,
+    AblationMatchSummary,
+    ablation_entry_metadata,
+    ablation_manifest_metadata,
+    preflight_ablation_study,
+)
 from .attack_schedule import (
     ScheduleError,
     build_schedule,
@@ -55,6 +63,7 @@ from .attack_schedule import (
 from .bayesian_artifact import BayesianArtifactError, load_bayesian_artifact
 from .config import AggregationConfig, ExperimentConfig
 from .evaluation_config import (
+    EXTENDED_POLICY_IDS,
     REQUIRED_POLICY_IDS,
     BaselineStudyConfig,
     HeldOutStudyConfig,
@@ -171,9 +180,11 @@ CHECKPOINT_FILENAME = "cells.jsonl"
 CHECKPOINT_SCHEMA = "dfl_held_out_checkpoint"
 CHECKPOINT_SCHEMA_VERSION = 1
 
-#: Canonical panel ordering used for deterministic manifest entry order.
+#: Canonical panel ordering used for deterministic manifest entry order. The
+#: first six indices are the legacy S01 identities, so extending this map to
+#: the opt-in eight-policy panel leaves six-policy output ordering unchanged.
 _POLICY_ORDER: dict[str, int] = {
-    policy_id: index for index, policy_id in enumerate(REQUIRED_POLICY_IDS)
+    policy_id: index for index, policy_id in enumerate(EXTENDED_POLICY_IDS)
 }
 
 #: A validated study, or a path to a study YAML spec.
@@ -224,6 +235,7 @@ class BaselineStudyResult:
     manifest_path: Path
     manifest: Mapping[str, object]
     cells: tuple[BaselineCell, ...] = field(default_factory=tuple)
+    ablation: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +266,7 @@ class SelectionResult:
     manifest_path: Path
     manifest: Mapping[str, object]
     cells: tuple[SelectionCell, ...] = field(default_factory=tuple)
+    ablation: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +279,7 @@ class FinalResult:
     manifest_path: Path
     manifest: Mapping[str, object]
     cells: tuple[SelectionCell, ...] = field(default_factory=tuple)
+    ablation: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,6 +296,7 @@ class HeldOutStudyResult:
     output_path: Path
     selection_result: SelectionResult
     final_result: FinalResult
+    ablation: Mapping[str, object] | None = None
 
     @property
     def selection_path(self) -> Path:
@@ -497,6 +512,28 @@ def _artifact_digest(
     return cache[artifact_dir]
 
 
+def _resolve_ablation_match(
+    study: BaselineStudyConfig,
+    *,
+    provided: AblationMatchSummary | None = None,
+) -> AblationMatchSummary | None:
+    """Return the validated matched triple for an opt-in study, else ``None``.
+
+    A legacy six-policy study (no ablation contract) never triggers the gate.
+    When ``provided`` is supplied the caller already validated this exact study
+    within the current invocation, so the immutable summary is reused instead
+    of reloading the three artifacts (Q6). Every public entry point revalidates
+    the current pinned artifacts when no summary is provided, so a stale cached
+    path or a previously frozen selection is never trusted.
+    """
+
+    if provided is not None:
+        return provided
+    if study.ablations is None:
+        return None
+    return preflight_ablation_study(study)
+
+
 def _manifest_entry(
     *,
     study: BaselineStudyConfig,
@@ -504,9 +541,10 @@ def _manifest_entry(
     seed: int,
     config: ExperimentConfig,
     artifact_digest: str | None,
+    match: AblationMatchSummary | None = None,
 ) -> dict:
     relative = _relative_trace_path(policy.id, seed)
-    return {
+    entry = {
         "pairing_key": f"{policy.id}:seed-{seed}",
         "seed": int(seed),
         "policy_id": policy.id,
@@ -523,6 +561,10 @@ def _manifest_entry(
         "status": "complete",
         "trace_path": relative,
     }
+    ablation = ablation_entry_metadata(match, policy.id)
+    if ablation is not None:
+        entry[ABLATION_METADATA_KEY] = ablation
+    return entry
 
 
 def _build_manifest(
@@ -530,6 +572,7 @@ def _build_manifest(
     study: BaselineStudyConfig,
     shared_input_digest: str,
     cells: tuple[BaselineCell, ...],
+    match: AblationMatchSummary | None = None,
 ) -> dict:
     entries = sorted(
         (dict(cell.manifest_entry) for cell in cells),
@@ -538,7 +581,7 @@ def _build_manifest(
             _POLICY_ORDER[str(entry["policy_id"])],
         ),
     )
-    return {
+    manifest: dict = {
         "schema": MANIFEST_SCHEMA,
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "study_id": study.study_id,
@@ -548,11 +591,15 @@ def _build_manifest(
         "candidate_budget": study.candidate_budget,
         "selection_seed": study.selection_seed,
         "selection_provenance": study.selection_provenance,
-        "panel": list(REQUIRED_POLICY_IDS),
+        "panel": list(study.policy_ids()),
         "seeds": sorted(int(seed) for seed in study.seeds),
         "entries": entries,
         "status": "complete",
     }
+    ablation = ablation_manifest_metadata(match)
+    if ablation is not None:
+        manifest[ABLATION_METADATA_KEY] = ablation
+    return manifest
 
 
 def manifest_bytes(manifest: Mapping[str, object]) -> bytes:
@@ -859,9 +906,15 @@ def _checkpoint_record(
     artifact_digest: str | None,
     relative: str,
     reused: bool,
+    match: AblationMatchSummary | None = None,
     extra: Mapping[str, object] | None = None,
 ) -> dict:
-    """One canonical per-cell checkpoint line."""
+    """One canonical per-cell checkpoint line.
+
+    For an opt-in ablation study the checkpoint additionally binds the matched
+    calibration-input digest and assumption version, so a resume can prove the
+    reused trace's artifact set is the one revalidated in this invocation.
+    """
 
     record: dict = {
         "schema": CHECKPOINT_SCHEMA,
@@ -881,6 +934,9 @@ def _checkpoint_record(
         "shared_input_digest": shared_input_digest,
         "reused": bool(reused),
     }
+    if match is not None:
+        record["ablation_match_digest"] = match.matched_calibration_input_digest
+        record["ablation_protocol_version"] = match.protocol_version
     if extra is not None:
         record.update(extra)
     return record
@@ -1069,6 +1125,7 @@ def run_baseline_study(
         evaluation_dataset_loader=evaluation_dataset_loader,
     )
     validator = TraceReader if trace_validator is None else trace_validator
+    ablation_match = _resolve_ablation_match(resolved)
 
     # Derive every cell config up front and prove the paired-input invariant
     # before any expensive training or evaluation work begins.
@@ -1118,6 +1175,7 @@ def run_baseline_study(
                 seed=seed,
                 config=config,
                 artifact_digest=artifact_digest,
+                match=ablation_match,
             )
             published_cells.append(
                 BaselineCell(
@@ -1133,6 +1191,7 @@ def run_baseline_study(
             study=resolved,
             shared_input_digest=shared_input_digest,
             cells=tuple(published_cells),
+            match=ablation_match,
         )
         _publish_staging(staging, destination, manifest, MANIFEST_FILENAME)
         published = True
@@ -1157,6 +1216,7 @@ def run_baseline_study(
         manifest_path=destination / MANIFEST_FILENAME,
         manifest=manifest,
         cells=final_cells,
+        ablation=ablation_manifest_metadata(ablation_match),
     )
 
 
@@ -1203,6 +1263,7 @@ def _selection_manifest_entry(
     artifact_digest: str | None,
     relative: str,
     reused: bool = False,
+    match: AblationMatchSummary | None = None,
 ) -> dict:
     """One per-cell selection manifest entry.
 
@@ -1213,7 +1274,7 @@ def _selection_manifest_entry(
     checkpoint instead of being recomputed in this run.
     """
 
-    return {
+    entry = {
         "pairing_key": f"{policy.id}:seed-{seed}:{schedule.id}",
         "seed": int(seed),
         "policy_id": policy.id,
@@ -1232,6 +1293,10 @@ def _selection_manifest_entry(
         "reused": bool(reused),
         "trace_path": relative,
     }
+    ablation = ablation_entry_metadata(match, policy.id)
+    if ablation is not None:
+        entry[ABLATION_METADATA_KEY] = ablation
+    return entry
 
 
 def selection_output_digest(manifest: Mapping[str, object]) -> str:
@@ -1250,6 +1315,7 @@ def _build_selection_manifest(
     selection: SelectionSpec,
     shared_input_digest: str,
     cells: tuple[SelectionCell, ...],
+    match: AblationMatchSummary | None = None,
 ) -> dict:
     entries = sorted(
         (dict(cell.manifest_entry) for cell in cells),
@@ -1271,10 +1337,13 @@ def _build_selection_manifest(
         "shared_input_digest": shared_input_digest,
         "selection_seeds": sorted(int(seed) for seed in study.seeds),
         "candidate_budget": study.candidate_budget,
-        "panel": list(REQUIRED_POLICY_IDS),
+        "panel": list(study.policy_ids()),
         "schedule_ids": sorted({str(entry["schedule_id"]) for entry in entries}),
         "entries": entries,
     }
+    ablation = ablation_manifest_metadata(match)
+    if ablation is not None:
+        manifest[ABLATION_METADATA_KEY] = ablation
     manifest["selection_output_digest"] = selection_output_digest(manifest)
     return manifest
 
@@ -1290,6 +1359,7 @@ def run_selection_phase(
     progress: SelectionProgressHook | None = None,
     trace_validator: TraceValidator | None = None,
     resume_from: str | os.PathLike[str] | None = None,
+    ablation_match: AblationMatchSummary | None = None,
 ) -> SelectionResult:
     """Run the selection panel over known schedules and freeze the output.
 
@@ -1334,6 +1404,7 @@ def run_selection_phase(
         evaluation_dataset_loader=evaluation_dataset_loader,
     )
     validator = TraceReader if trace_validator is None else trace_validator
+    match = _resolve_ablation_match(study, provided=ablation_match)
 
     cells = _canonical_selection_cells(selection)
     if not cells:
@@ -1368,14 +1439,20 @@ def run_selection_phase(
     checkpoint_directory: Path | None = None
     checkpoint_records: dict[str, dict] = {}
     if resume_from is not None:
+        expected: dict[str, object] = {
+            "study_digest": study_digest(study),
+            "selection_spec_digest": selection_spec_digest(selection),
+            "shared_input_digest": shared_input_digest,
+        }
+        if match is not None:
+            expected["ablation_match_digest"] = (
+                match.matched_calibration_input_digest
+            )
+            expected["ablation_protocol_version"] = match.protocol_version
         checkpoint_directory, checkpoint_records = _load_resume_checkpoint(
             resume_from,
             phase="selection",
-            expected={
-                "study_digest": study_digest(study),
-                "selection_spec_digest": selection_spec_digest(selection),
-                "shared_input_digest": shared_input_digest,
-            },
+            expected=expected,
         )
 
     staging: Path | None = None
@@ -1446,6 +1523,7 @@ def run_selection_phase(
                     artifact_digest=artifact_digest,
                     relative=relative,
                     reused=reused,
+                    match=match,
                 ),
             )
             entry = _selection_manifest_entry(
@@ -1458,6 +1536,7 @@ def run_selection_phase(
                 artifact_digest=artifact_digest,
                 relative=relative,
                 reused=reused,
+                match=match,
             )
             published_cells.append(
                 SelectionCell(
@@ -1479,6 +1558,7 @@ def run_selection_phase(
             selection=selection,
             shared_input_digest=shared_input_digest,
             cells=tuple(published_cells),
+            match=match,
         )
         _publish_staging(
             staging, destination, manifest, SELECTION_MANIFEST_FILENAME
@@ -1512,6 +1592,7 @@ def run_selection_phase(
         manifest_path=destination / SELECTION_MANIFEST_FILENAME,
         manifest=manifest,
         cells=final_cells,
+        ablation=ablation_manifest_metadata(match),
     )
 
 
@@ -1579,6 +1660,7 @@ def _load_frozen_selection_manifest(
         raise EvaluationError(
             f"selection manifest status {status!r} is not 'frozen'"
         )
+    _declared_manifest_panel(manifest, label="selection manifest")
     return directory, manifest
 
 
@@ -1620,6 +1702,7 @@ def _final_manifest_entry(
     held_out: bool,
     metrics: Mapping[str, object] | None = None,
     reused: bool = False,
+    match: AblationMatchSummary | None = None,
 ) -> dict:
     """One per-cell final manifest entry.
 
@@ -1643,6 +1726,7 @@ def _final_manifest_entry(
         artifact_digest=artifact_digest,
         relative=relative,
         reused=reused,
+        match=match,
     )
     entry["held_out"] = bool(held_out)
     if metrics is not None:
@@ -1656,6 +1740,7 @@ def _build_final_manifest(
     selection_manifest: Mapping[str, object],
     shared_input_digest: str,
     cells: tuple[SelectionCell, ...],
+    match: AblationMatchSummary | None = None,
 ) -> dict:
     entries = sorted(
         (dict(cell.manifest_entry) for cell in cells),
@@ -1686,7 +1771,7 @@ def _build_final_manifest(
         "selection_seeds": sorted(int(seed) for seed in study.seeds),
         "final_seeds": sorted(int(seed) for seed in spec.final_seeds),
         "candidate_budget": study.candidate_budget,
-        "panel": list(REQUIRED_POLICY_IDS),
+        "panel": list(study.policy_ids()),
         "schedule_ids": sorted(
             {str(entry["schedule_id"]) for entry in entries}
         ),
@@ -1698,6 +1783,9 @@ def _build_final_manifest(
         },
         "entries": entries,
     }
+    ablation = ablation_manifest_metadata(match)
+    if ablation is not None:
+        manifest[ABLATION_METADATA_KEY] = ablation
     manifest["final_output_digest"] = final_output_digest(manifest)
     return manifest
 
@@ -1714,6 +1802,7 @@ def run_final_phase(
     progress: SelectionProgressHook | None = None,
     trace_validator: TraceValidator | None = None,
     resume_from: str | os.PathLike[str] | None = None,
+    ablation_match: AblationMatchSummary | None = None,
 ) -> FinalResult:
     """Run held-out final seeds over known plus reserved schedules.
 
@@ -1762,6 +1851,7 @@ def run_final_phase(
         evaluation_dataset_loader=evaluation_dataset_loader,
     )
     validator = TraceReader if trace_validator is None else trace_validator
+    match = _resolve_ablation_match(study, provided=ablation_match)
 
     selection_dir, selection_manifest = _load_frozen_selection_manifest(
         selection_output
@@ -1840,15 +1930,21 @@ def run_final_phase(
     checkpoint_directory: Path | None = None
     checkpoint_records: dict[str, dict] = {}
     if resume_from is not None:
+        expected: dict[str, object] = {
+            "study_digest": expected_study_digest,
+            "selection_spec_digest": expected_selection_digest,
+            "held_out_study_digest": held_out_study_digest(spec),
+            "shared_input_digest": shared_input_digest,
+        }
+        if match is not None:
+            expected["ablation_match_digest"] = (
+                match.matched_calibration_input_digest
+            )
+            expected["ablation_protocol_version"] = match.protocol_version
         checkpoint_directory, checkpoint_records = _load_resume_checkpoint(
             resume_from,
             phase="final",
-            expected={
-                "study_digest": expected_study_digest,
-                "selection_spec_digest": expected_selection_digest,
-                "held_out_study_digest": held_out_study_digest(spec),
-                "shared_input_digest": shared_input_digest,
-            },
+            expected=expected,
         )
 
     staging: Path | None = None
@@ -1921,6 +2017,7 @@ def run_final_phase(
                     artifact_digest=artifact_digest,
                     relative=relative,
                     reused=reused,
+                    match=match,
                     extra={
                         "held_out_study_digest": held_out_study_digest(spec),
                         "selection_output_digest": selection_manifest.get(
@@ -1941,6 +2038,7 @@ def run_final_phase(
                 held_out=schedule.id == held_out_id,
                 metrics=metrics,
                 reused=reused,
+                match=match,
             )
             published_cells.append(
                 SelectionCell(
@@ -1963,6 +2061,7 @@ def run_final_phase(
             selection_manifest=selection_manifest,
             shared_input_digest=shared_input_digest,
             cells=tuple(published_cells),
+            match=match,
         )
         _publish_staging(
             staging, destination, manifest, FINAL_MANIFEST_FILENAME
@@ -1997,6 +2096,7 @@ def run_final_phase(
         manifest_path=destination / FINAL_MANIFEST_FILENAME,
         manifest=manifest,
         cells=final_cells,
+        ablation=ablation_manifest_metadata(match),
     )
 
 
@@ -2026,6 +2126,7 @@ def _rekey_selection_result(
         manifest_path=output_path / SELECTION_MANIFEST_FILENAME,
         manifest=result.manifest,
         cells=cells,
+        ablation=result.ablation,
     )
 
 
@@ -2053,6 +2154,7 @@ def _rekey_final_result(
         manifest_path=output_path / FINAL_MANIFEST_FILENAME,
         manifest=result.manifest,
         cells=cells,
+        ablation=result.ablation,
     )
 
 
@@ -2125,6 +2227,10 @@ def run_held_out_study(
         evaluation_dataset_loader=evaluation_dataset_loader,
     )
     validator = TraceReader if trace_validator is None else trace_validator
+    # Validate the matched triple once for the whole two-phase invocation and
+    # reuse the immutable summary in both phases (Q6). A mismatch fails closed
+    # here, before any cell runs or any checkpoint is reused.
+    match = _resolve_ablation_match(study)
 
     selection_resume: Path | None = None
     final_resume: Path | None = None
@@ -2160,6 +2266,7 @@ def run_held_out_study(
             progress=_phase_progress(progress, "selection"),
             trace_validator=validator,
             resume_from=selection_resume,
+            ablation_match=match,
         )
         # Durably commit the frozen selection output before the final phase
         # reads it back from disk.
@@ -2177,6 +2284,7 @@ def run_held_out_study(
             progress=_phase_progress(progress, "final"),
             trace_validator=validator,
             resume_from=final_resume,
+            ablation_match=match,
         )
         _fsync_dir(final_output)
         # Build the paired per-cell metrics summary from the just-written final
@@ -2214,6 +2322,7 @@ def run_held_out_study(
             selection_output_path=selection_path,
             output_path=final_path,
         ),
+        ablation=ablation_manifest_metadata(match),
     )
 
 
@@ -2325,6 +2434,53 @@ def _linear_quantile(ordered: Sequence[float], q: float) -> float:
     )
 
 
+def _declared_manifest_panel(
+    manifest: Mapping[str, object], *, label: str
+) -> tuple[str, ...]:
+    """Return the manifest's declared panel after bounded validation.
+
+    The runner always emits the canonical six- or eight-policy panel. A declared
+    panel must be a non-empty sequence of known policy ids; if it is exactly the
+    eight-policy canonical panel it must carry the ablation identity block, and
+    the block may not appear on any other panel. This closes the optional
+    metadata coupling without forcing synthetic partial-panel unit fixtures to
+    grow to six entries.
+    """
+
+    raw_panel = manifest.get("panel")
+    if raw_panel is None:
+        panel: tuple[str, ...] = REQUIRED_POLICY_IDS
+    elif (
+        isinstance(raw_panel, Sequence)
+        and not isinstance(raw_panel, (str, bytes))
+        and raw_panel
+    ):
+        panel = tuple(str(policy_id) for policy_id in raw_panel)
+    else:
+        raise EvaluationError(
+            f"{label} panel must be a non-empty sequence"
+        )
+    unknown = sorted(
+        policy_id for policy_id in panel if policy_id not in _POLICY_ORDER
+    )
+    if unknown:
+        raise EvaluationError(
+            f"{label} panel declares unknown policy ids {unknown!r}"
+        )
+    ablation = manifest.get(ABLATION_METADATA_KEY)
+    if panel == EXTENDED_POLICY_IDS and not isinstance(ablation, Mapping):
+        raise EvaluationError(
+            f"{label} declares the eight-policy panel without an ablation "
+            "identity block"
+        )
+    if ablation is not None and panel != EXTENDED_POLICY_IDS:
+        raise EvaluationError(
+            f"{label} declares ablation metadata without the eight-policy "
+            "panel"
+        )
+    return panel
+
+
 def _validate_final_manifest_for_summary(manifest: Mapping[str, object]) -> None:
     """Validate the final-manifest envelope needed to build paired metrics."""
 
@@ -2358,6 +2514,7 @@ def _validate_final_manifest_for_summary(manifest: Mapping[str, object]) -> None
         or not final_seeds
     ):
         raise EvaluationError("final manifest final_seeds must be a non-empty sequence")
+    _declared_manifest_panel(manifest, label="final manifest")
 
 
 def _load_final_manifest_for_summary(
@@ -2472,6 +2629,7 @@ def build_robustness_summary(
         try:
             seed = int(entry["seed"])
             policy_id = str(entry["policy_id"])
+            policy_kind = str(entry.get("policy_kind", policy_id))
             schedule_id = str(entry["schedule_id"])
             relative = str(entry["trace_path"])
             held_out = bool(entry["held_out"])
@@ -2480,6 +2638,12 @@ def build_robustness_summary(
             realized = tuple(float(x) for x in entry["realized_kappa_sequence"])
         except (KeyError, TypeError, ValueError) as exc:
             raise EvaluationError("final manifest entry is malformed") from exc
+        entry_ablation = entry.get(ABLATION_METADATA_KEY)
+        if entry_ablation is not None and not isinstance(entry_ablation, Mapping):
+            raise EvaluationError(
+                f"final manifest entry {policy_id!r} ablation metadata must be an "
+                "object"
+            )
         label = f"policy {policy_id!r} seed {seed} schedule {schedule_id!r}"
 
         expected = _selection_relative_trace_path(policy_id, seed, schedule_id)
@@ -2535,7 +2699,7 @@ def build_robustness_summary(
             raise EvaluationError(
                 f"{label} trace seed {trace_seed} disagrees with the manifest"
             )
-        if trace_kind != policy_id:
+        if trace_kind != policy_kind:
             raise EvaluationError(
                 f"{label} trace aggregation {trace_kind!r} disagrees with the "
                 "manifest policy provenance"
@@ -2557,10 +2721,13 @@ def build_robustness_summary(
         bucket = cells.setdefault((schedule_id, policy_id), {})
         if seed in bucket:
             raise EvaluationError(f"duplicate manifest cell {label}")
-        bucket[seed] = {"metrics": metrics, "held_out": held_out}
+        bucket[seed] = {
+            "metrics": metrics,
+            "held_out": held_out,
+            "ablation": None if entry_ablation is None else dict(entry_ablation),
+        }
 
-    panel_raw = manifest.get("panel") or list(REQUIRED_POLICY_IDS)
-    panel = tuple(str(policy_id) for policy_id in panel_raw)
+    panel = _declared_manifest_panel(manifest, label="final manifest")
     schedule_ids = sorted({schedule_id for schedule_id, _ in cells})
     expected_seeds = set(final_seeds)
 
@@ -2594,38 +2761,51 @@ def build_robustness_summary(
                     f"inconsistent node counts {sorted(node_counts)!r}"
                 )
             ordered_accuracy = sorted(per_seed_accuracy)
-            aggregates.append(
-                {
-                    "policy_id": policy_id,
-                    "schedule_id": schedule_id,
-                    "held_out": bool(bucket[seeds[0]]["held_out"]),
-                    "seeds": seeds,
-                    "count": len(seeds),
-                    "node_count": node_counts.pop(),
-                    "mean_accuracy": sum(per_seed_accuracy) / len(seeds),
-                    "std_accuracy": _population_std(per_seed_accuracy),
-                    "iqr_accuracy": _linear_quantile(ordered_accuracy, 0.75)
-                    - _linear_quantile(ordered_accuracy, 0.25),
-                    "mean_loss": sum(per_seed_loss) / len(seeds),
-                    "worst_node_accuracy": min(
-                        float(bucket[seed]["metrics"]["worst_node_accuracy"])
-                        for seed in seeds
-                    ),
-                    "per_seed": [
-                        {
-                            "seed": seed,
-                            "mean_accuracy": per_seed_accuracy[index],
-                            "mean_loss": per_seed_loss[index],
-                            "worst_node_accuracy": float(
-                                bucket[seed]["metrics"]["worst_node_accuracy"]
-                            ),
-                        }
-                        for index, seed in enumerate(seeds)
-                    ],
-                }
-            )
+            ablations = [
+                bucket[seed]["ablation"] for seed in seeds
+            ]
+            if any(value is not None for value in ablations):
+                non_null = [value for value in ablations if value is not None]
+                if len(non_null) != len(seeds) or any(
+                    value != non_null[0] for value in non_null[1:]
+                ):
+                    raise EvaluationError(
+                        f"schedule {schedule_id!r} policy {policy_id!r} has "
+                        "inconsistent ablation identity across paired seeds"
+                    )
+            aggregate = {
+                "policy_id": policy_id,
+                "schedule_id": schedule_id,
+                "held_out": bool(bucket[seeds[0]]["held_out"]),
+                "seeds": seeds,
+                "count": len(seeds),
+                "node_count": node_counts.pop(),
+                "mean_accuracy": sum(per_seed_accuracy) / len(seeds),
+                "std_accuracy": _population_std(per_seed_accuracy),
+                "iqr_accuracy": _linear_quantile(ordered_accuracy, 0.75)
+                - _linear_quantile(ordered_accuracy, 0.25),
+                "mean_loss": sum(per_seed_loss) / len(seeds),
+                "worst_node_accuracy": min(
+                    float(bucket[seed]["metrics"]["worst_node_accuracy"])
+                    for seed in seeds
+                ),
+                "per_seed": [
+                    {
+                        "seed": seed,
+                        "mean_accuracy": per_seed_accuracy[index],
+                        "mean_loss": per_seed_loss[index],
+                        "worst_node_accuracy": float(
+                            bucket[seed]["metrics"]["worst_node_accuracy"]
+                        ),
+                    }
+                    for index, seed in enumerate(seeds)
+                ],
+            }
+            if ablations[0] is not None:
+                aggregate[ABLATION_METADATA_KEY] = ablations[0]
+            aggregates.append(aggregate)
 
-    return {
+    summary: dict = {
         "schema": ROBUSTNESS_SUMMARY_SCHEMA,
         "schema_version": ROBUSTNESS_SUMMARY_SCHEMA_VERSION,
         "status": "complete",
@@ -2643,6 +2823,12 @@ def build_robustness_summary(
         "quantile_method": ROBUSTNESS_QUANTILE_METHOD,
         "aggregates": aggregates,
     }
+    # Only the opt-in eight-policy summary gains the ablation block; a legacy
+    # six-policy summary keeps its exact prior shape.
+    ablation = manifest.get(ABLATION_METADATA_KEY)
+    if ablation is not None:
+        summary[ABLATION_METADATA_KEY] = ablation
+    return summary
 
 
 def summarize_held_out_study(

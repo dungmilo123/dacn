@@ -53,6 +53,7 @@ from .ablation import (
     NO_STRATEGIC_EFFECTIVE_MU_A,
     NO_STRATEGIC_VARIANT,
     SOURCE_MU_A,
+    isolation_statement,
     matched_calibration_input_digest,
 )
 from .bayesian_artifact import (
@@ -71,11 +72,19 @@ from .evaluation_config import (
 )
 
 __all__ = [
+    "ABLATION_METADATA_KEY",
     "AblationEvaluationError",
     "AblationMatchSummary",
     "AblationVariantIdentity",
+    "ablation_entry_metadata",
+    "ablation_manifest_metadata",
     "preflight_ablation_study",
 ]
+
+#: Manifest/checkpoint/summary sub-key carrying the ablation identity metadata.
+#: It is only emitted for the opt-in eight-policy panel, so six-policy outputs
+#: are never reformatted by absent optional metadata.
+ABLATION_METADATA_KEY = "ablation"
 
 #: Maximum rendered diagnostic detail length (bounded study errors, Q5).
 _MAX_DETAIL = 400
@@ -192,6 +201,75 @@ class AblationMatchSummary:
         """Return the calibration variant for ``policy_id``."""
 
         return self.variants[policy_id].variant
+
+
+# --------------------------------------------------------------------------- #
+# Matched identity projection (manifests / checkpoints / summaries)
+# --------------------------------------------------------------------------- #
+def _variant_metadata(identity: AblationVariantIdentity) -> dict:
+    """One variant's identity metadata, including its explicit limitation."""
+
+    return {
+        "variant": identity.variant,
+        "aggregate_digest": identity.aggregate_digest,
+        "matched_calibration_input_digest": (
+            identity.matched_calibration_input_digest
+        ),
+        "assumption_version": identity.protocol_version,
+        "isolation_statement": isolation_statement(identity.variant),
+    }
+
+
+def ablation_entry_metadata(
+    summary: AblationMatchSummary | None, policy_id: str
+) -> dict | None:
+    """Per-panel-entry ablation identity metadata, or ``None`` when absent.
+
+    Only the three artifact-backed policy ids carry metadata; every baseline
+    and for the legacy six-policy panel this returns ``None`` so no optional
+    key is ever added to an ordinary manifest entry.
+    """
+
+    if summary is None or policy_id not in summary.variants:
+        return None
+    return _variant_metadata(summary.identity(policy_id))
+
+
+def ablation_manifest_metadata(
+    summary: AblationMatchSummary | None,
+) -> dict | None:
+    """Manifest-level matched-ablation identity block, or ``None`` when absent.
+
+    Carries the normalized match digest, the assumption (protocol) version, the
+    full and ablated aggregate digests, each variant's identity, and the
+    explicit fixed-behavior limitation statement. It carries no filesystem
+    path, so it can be embedded in a published manifest without leaking an
+    environment location.
+    """
+
+    if summary is None:
+        return None
+    full_policy = ARTIFACT_POLICY_IDS[0]
+    variants = {
+        policy_id: _variant_metadata(summary.identity(policy_id))
+        for policy_id in summary.matched_policy_ids
+    }
+    return {
+        "assumption_version": summary.protocol_version,
+        "matched_calibration_input_digest": (
+            summary.matched_calibration_input_digest
+        ),
+        "data_provenance": summary.data_provenance,
+        "full_aggregate_digest": variants[full_policy]["aggregate_digest"],
+        "ablated_aggregate_digests": {
+            policy_id: variants[policy_id]["aggregate_digest"]
+            for policy_id in ARTIFACT_POLICY_IDS[1:]
+        },
+        "fixed_behavior_limitation": isolation_statement(
+            NO_STRATEGIC_VARIANT
+        ),
+        "variants": variants,
+    }
 
 
 # --------------------------------------------------------------------------- #

@@ -52,6 +52,7 @@ from dfl_sim import (
     study_digest,
 )
 from helpers import MNISTShapedDataset, make_config
+from dfl_sim.ablation_evaluation import ABLATION_METADATA_KEY
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BAYESIAN_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "bayesian_v1"
@@ -294,6 +295,15 @@ def test_final_manifest_identity(final_run) -> None:
     assert final_run.result.selection_output_path.resolve() == (
         final_run.selection_output.resolve()
     )
+
+
+def test_final_manifest_has_no_ablation_metadata(final_run) -> None:
+    manifest = final_run.result.manifest
+    assert manifest["panel"] == list(REQUIRED_POLICY_IDS)
+    assert ABLATION_METADATA_KEY not in manifest
+    assert final_run.result.ablation is None
+    for entry in manifest["entries"]:
+        assert ABLATION_METADATA_KEY not in entry
 
 
 def test_final_digests_bind_spec_and_selection(final_run) -> None:

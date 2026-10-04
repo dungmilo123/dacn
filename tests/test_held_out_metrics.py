@@ -40,6 +40,7 @@ from dfl_sim import (
     ROBUSTNESS_SUMMARY_FILENAME,
     ROBUSTNESS_SUMMARY_SCHEMA,
     ROBUSTNESS_SUMMARY_SCHEMA_VERSION,
+    REQUIRED_POLICY_IDS,
     RoundResult,
     SELECTION_MANIFEST_FILENAME,
     SELECTION_MANIFEST_SCHEMA,
@@ -57,6 +58,7 @@ from dfl_sim import (
 )
 from helpers import make_config
 from test_held_out_final import _dataset, _evaluation_dataset, _held_out
+from dfl_sim.ablation_evaluation import ABLATION_METADATA_KEY
 
 # --------------------------------------------------------------------------- #
 # Synthetic deterministic study root (exact hand-computable metrics)
@@ -567,3 +569,11 @@ def test_real_summary_has_no_canonical_report_framing(real_study) -> None:
     assert "figure" not in text
     assert "evidence_class" not in text
     assert "claim_class" not in text
+
+
+def test_real_summary_has_no_ablation_metadata(real_study) -> None:
+    summary = summarize_held_out_study(real_study.output, write=False)
+    assert summary["panel"] == list(REQUIRED_POLICY_IDS)
+    assert ABLATION_METADATA_KEY not in summary
+    for aggregate in summary["aggregates"]:
+        assert ABLATION_METADATA_KEY not in aggregate

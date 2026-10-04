@@ -348,6 +348,19 @@ def test_checkpoint_globals_bind_the_study(clean_study) -> None:
     }
 
 
+def test_checkpoint_has_no_ablation_identity_for_six_policy(
+    clean_study,
+) -> None:
+    for phase in ("selection", "final"):
+        records = _read_checkpoint_lines(
+            clean_study.output / phase / CHECKPOINT_FILENAME
+        )
+        assert records
+        for record in records:
+            assert "ablation_match_digest" not in record
+            assert "ablation_protocol_version" not in record
+
+
 # --------------------------------------------------------------------------- #
 # Partial resume: reuse matched cells, recompute only the missing ones
 # --------------------------------------------------------------------------- #
