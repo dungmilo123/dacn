@@ -205,9 +205,28 @@ def test_invalid_dataset_rejected() -> None:
         make(data={"dataset": "cifar10"})
 
 
-def test_non_iid_partition_rejected() -> None:
-    with pytest.raises(ConfigError):
+def test_non_iid_partition_requires_alpha() -> None:
+    # Dirichlet is now an opt-in mode, but it must declare a finite positive
+    # concentration; a bare request without alpha is still invalid.
+    with pytest.raises(ConfigError, match="dirichlet_alpha is required"):
         make(data={"partition": "dirichlet"})
+
+
+def test_dirichlet_partition_with_alpha_accepted() -> None:
+    config = make(data={"partition": "dirichlet", "dirichlet_alpha": 0.5})
+    assert config.data.partition == "dirichlet"
+    assert config.data.dirichlet_alpha == 0.5
+
+
+def test_iid_partition_rejects_alpha() -> None:
+    with pytest.raises(ConfigError, match="only valid when"):
+        make(data={"partition": "iid", "dirichlet_alpha": 0.5})
+
+
+@pytest.mark.parametrize("alpha", [0.0, -1.0, float("nan"), float("inf")])
+def test_dirichlet_partition_rejects_invalid_alpha(alpha: float) -> None:
+    with pytest.raises(ConfigError):
+        make(data={"partition": "dirichlet", "dirichlet_alpha": alpha})
 
 
 def test_invalid_model_rejected() -> None:

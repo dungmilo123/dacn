@@ -24,6 +24,7 @@ from pydantic import (
     Field,
     ValidationError,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -136,10 +137,24 @@ class ModelConfig(_StrictModel):
 
 
 class DataConfig(_StrictModel):
-    """Dataset and partition bounds. M001 is MNIST + IID only (D006)."""
+    """Dataset and partition bounds. M001 is MNIST + IID only (D006).
+
+    M003 adds an **opt-in** capacity-constrained class-wise Dirichlet partition
+    (D039), selected by ``partition="dirichlet"`` with a required finite,
+    strictly positive ``dirichlet_alpha``. The alpha is forbidden for IID and
+    required for Dirichlet, so the two modes can never be silently mixed.
+
+    ``dirichlet_alpha`` is deliberately omitted from serialization when it is
+    absent (the opt-in wrap-serializer pattern already used by the study
+    envelope), so existing IID config/study/artifact canonical dumps and
+    digests stay byte-for-byte unchanged.
+    """
 
     dataset: Literal["mnist"] = "mnist"
-    partition: Literal["iid"] = "iid"
+    partition: Literal["iid", "dirichlet"] = "iid"
+    dirichlet_alpha: float | None = Field(
+        default=None, gt=0.0, allow_inf_nan=False
+    )
     samples_per_node: int = Field(ge=1, le=MAX_SAMPLES_PER_NODE)
     data_root: str = Field(default="data", min_length=1, max_length=256)
     download: bool = False
@@ -150,6 +165,30 @@ class DataConfig(_StrictModel):
         if "\x00" in value:
             raise ValueError("data_root must not contain NUL bytes")
         return value
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_dirichlet(self, handler, info):
+        """Serialize without a null ``dirichlet_alpha`` (legacy canonical form)."""
+
+        data = handler(self)
+        if self.dirichlet_alpha is None:
+            data.pop("dirichlet_alpha", None)
+        return data
+
+    @model_validator(mode="after")
+    def _validate_partition_alpha(self) -> "DataConfig":
+        if self.partition == "dirichlet":
+            if self.dirichlet_alpha is None:
+                raise ValueError(
+                    "data.dirichlet_alpha is required when "
+                    "data.partition == 'dirichlet'"
+                )
+        elif self.dirichlet_alpha is not None:
+            raise ValueError(
+                "data.dirichlet_alpha is only valid when "
+                "data.partition == 'dirichlet'"
+            )
+        return self
 
 
 class TrainingConfig(_StrictModel):

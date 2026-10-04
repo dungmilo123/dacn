@@ -3,8 +3,9 @@
 :func:`run_from_config` is the single orchestrator that closes the S01 loop and
 the S04 production path. It resets deterministic state, validates the config and
 every requested output destination, builds/freezes the topology, loads and
-seeded-IID-partitions the dataset, initializes one deterministic small-CNN state
-cloned to every node, executes the configured rounds through
+seeds the configured IID or Dirichlet partition of the dataset, initializes one
+deterministic small-CNN state cloned to every node, executes the configured
+rounds through
 :func:`~dfl_sim.simulator.run_round`, and (optionally) publishes either the
 canonical minimal round log, a complete versioned schema-v1 trajectory, or both.
 
@@ -201,7 +202,12 @@ def run_from_config(
         data = load_mnist_dataset(resolved)
 
     partitions = partition_dataset(
-        data, node_ids, resolved.data.samples_per_node, seed=seeds.partition
+        data,
+        node_ids,
+        resolved.data.samples_per_node,
+        seed=seeds.partition,
+        partition=resolved.data.partition,
+        alpha=resolved.data.dirichlet_alpha,
     )
 
     # One immutable controller for the whole episode: the D016 intensity is

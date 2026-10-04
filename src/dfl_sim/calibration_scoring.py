@@ -63,9 +63,9 @@ from .calibration_config import CalibrationConfig
 from .config import ExperimentConfig
 from .data import (
     load_mnist_dataset,
-    partition_indices,
-    partition_indices_with_design,
-    subset_for_node,
+    load_mnist_evaluation_dataset,
+    partition_dataset,
+    partition_dataset_with_design,
 )
 from .models import ModelError, StateDictError, build_model, load_state_into_model
 from .node import evaluate_cross_entropy
@@ -614,9 +614,9 @@ def collect_episode(
 
     The episode uses the real :func:`~dfl_sim.run.run_from_config` path with the
     plain-average reference policy. The clean design split is carved with
-    :func:`~dfl_sim.data.partition_indices_with_design` from the **same** seeded
-    permutation the runner uses for the node partitions (the episode seed's
-    partition domain), so it is provably disjoint from every node-local block
+    :func:`~dfl_sim.data.partition_dataset_with_design` through the same
+    ``partition``/``alpha`` dispatch and seed domain the runner uses for the
+    node partitions, so it is provably disjoint from every node-local block
     while never touching the final-test loader.
     """
 
@@ -635,28 +635,36 @@ def collect_episode(
     topology = load_topology(resolved)
     node_ids = tuple(sorted(int(node) for node in topology.nodes()))
 
-    split = partition_indices_with_design(
-        len(dataset),
+    split = partition_dataset_with_design(
+        dataset,
         node_ids,
         resolved.data.samples_per_node,
         seed=seeds.partition,
         design_size=config.design_split_size,
+        partition=resolved.data.partition,
+        alpha=resolved.data.dirichlet_alpha,
     )
     # Defensive: the runner's own partitioning must reproduce the node blocks
-    # we subtracted from the single permutation, or the design split would not
-    # actually be disjoint.
-    expected_nodes = partition_indices(
-        len(dataset),
+    # the design split was carved around, or the design split would not
+    # actually be disjoint from what the runner trains on.
+    expected_subsets = partition_dataset(
+        dataset,
         node_ids,
         resolved.data.samples_per_node,
         seed=seeds.partition,
+        partition=resolved.data.partition,
+        alpha=resolved.data.dirichlet_alpha,
     )
+    expected_nodes = {
+        node: tuple(int(index) for index in subset.indices)
+        for node, subset in expected_subsets.items()
+    }
     if expected_nodes != split.node_indices:  # pragma: no cover - invariant
         raise CalibrationScoringError(
             "design split node blocks disagree with the runner partition"
         )
 
-    design_subset = subset_for_node(dataset, split.design_indices)
+    design_subset = split.design_subset
     design_loss = make_design_loss_evaluator(resolved, design_subset)
     sink: list[NodeRoundRecord] = []
     builder = CalibrationObservationBuilder(
