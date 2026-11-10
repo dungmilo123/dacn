@@ -21,7 +21,8 @@ from analyze_b3 import curves, significant_mean
 
 RESULTS = Path("experiments/results")
 FILES = {"uniform": RESULTS / "b1_b2_lattice_noniid.json",
-         **{d: RESULTS / f"b5_{d}_lattice_noniid.json" for d in ("gate", "median", "trimmed", "clip", "balance")}}
+         **{d: RESULTS / f"b5_{d}_lattice_noniid.json" for d in ("gate", "median", "trimmed", "clip", "balance")},
+         "recip": RESULTS / "b6_recip_lattice_noniid.json"}
 RHOS = (1.0, 1.25, 1.5, 2.0)
 
 

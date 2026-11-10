@@ -27,7 +27,7 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 import numpy as np
 
-from dfl_lambda import DEFENSES, accuracy, aggregate, initialize, lattice, load_mnist, make_split, train
+from dfl_lambda import DEFENSES, accuracy, init_trust, initialize, lattice, load_mnist, make_split, step
 
 T_CRIT = 2.776  # one-sided 97.5% Student t, 4 df (5 paired seeds)
 _X = _Y = None
@@ -41,26 +41,17 @@ def _init(cache, args):
     _ARGS = argparse.Namespace(**args)
 
 
-def _step(w, t, seed, lams, split, nb):
-    a, x, y = _ARGS, _X, _Y
-    train_idx, val_idx = split[0], split[1]
-    local = [train(w[i], x[train_idx[i]], y[train_idx[i]], np.random.default_rng([seed, i, t]), a.lr, a.batch_size)
-             for i in range(a.nodes)]
-    messages = [l if lam == 0 else [lk - lam * (lk - pk) for lk, pk in zip(l, w[i])]
-                for i, (l, lam) in enumerate(zip(local, lams))]
-    return [aggregate(a.defense, local[i], [messages[j] for j in nb[i]], x[val_idx[i]], y[val_idx[i]],
-                      t, a.rounds, a) for i in range(a.nodes)]
-
-
 def _snapshot(seed):
+    """Round-s state (split, served models, trust) of the clean run; identical for every profile."""
     if seed not in _SNAP:
         a, nb = _ARGS, lattice(_ARGS.nodes)
         split = make_split(_Y, seed, a)
         w = [initialize(seed, a.hidden) for _ in range(a.nodes)]
+        trust = init_trust(a.nodes, a)
         zero = [0.0] * a.nodes
         for t in range(a.attack_start):
-            w = _step(w, t, seed, zero, split, nb)
-        _SNAP[seed] = (split, w)
+            w, trust, _, _ = step(w, trust, t, seed, zero, split, nb, a, _X, _Y)
+        _SNAP[seed] = (split, w, trust)
     return _SNAP[seed]
 
 
@@ -68,11 +59,11 @@ def simulate(job):
     """job = (seed, profile tuple, with_audit). Returns q (and audit) for rounds s+1..T, shape [K, N]."""
     seed, profile, with_audit = job
     a, x, y, nb = _ARGS, _X, _Y, lattice(_ARGS.nodes)
-    split, w = _snapshot(seed)
+    split, w, trust = _snapshot(seed)
     _, val_idx, audit_idx = split
     q, au = [], []
     for t in range(a.attack_start, a.rounds):
-        w = _step(w, t, seed, profile, split, nb)
+        w, trust, _, _ = step(w, trust, t, seed, list(profile), split, nb, a, x, y)
         q.append([accuracy(w[i], x[val_idx[i]], y[val_idx[i]]) for i in range(a.nodes)])
         if with_audit:
             au.append([accuracy(w[i], x[audit_idx], y[audit_idx]) for i in range(a.nodes)])
@@ -138,6 +129,7 @@ def main():
     p.add_argument("--max-sweeps", type=int, default=6)
     p.add_argument("--nodes", type=int, default=16)
     p.add_argument("--mode", default="non_iid")
+    p.add_argument("--val-dist", choices=["local", "balanced"], default="local")
     p.add_argument("--alpha", type=float, default=1.0)
     p.add_argument("--rounds", type=int, default=40)
     p.add_argument("--attack-start", type=int, default=10)
@@ -153,12 +145,20 @@ def main():
     p.add_argument("--balance-gamma", type=float, default=0.3)
     p.add_argument("--balance-kappa", type=float, default=1.0)
     p.add_argument("--balance-alpha", type=float, default=0.5)
+    p.add_argument("--flag-tol", type=float, default=0.5)
+    p.add_argument("--trust-beta", type=float, default=0.5)
+    p.add_argument("--trust-thr", type=float, default=0.75)
+    p.add_argument("--trust-warmup", type=int, default=5)
+    p.add_argument("--punish-rounds", type=int, default=0)
+    p.add_argument("--grace-rounds", type=int, default=0)
     p.add_argument("--workers", type=int, default=min(20, os.cpu_count() or 1))
     args = p.parse_args()
     sim_args = {k: getattr(args, k) for k in ("nodes", "mode", "alpha", "rounds", "attack_start", "samples",
                                               "validation", "audit_per_class", "hidden", "batch_size", "lr",
                                               "defense", "gate_tol", "trim_b", "balance_gamma",
-                                              "balance_kappa", "balance_alpha")}
+                                              "balance_kappa", "balance_alpha", "flag_tol", "trust_beta",
+                                              "trust_thr", "trust_warmup", "val_dist", "punish_rounds",
+                                              "grace_rounds")}
     nb = lattice(args.nodes)
     K = args.rounds - args.attack_start
     w = args.discount ** np.arange(K)
